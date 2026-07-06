@@ -202,9 +202,10 @@ func preflightGuard(ctx context.Context, env *axiEnv, branch string) func(*cobra
 }
 
 // triggerRun starts a fresh run for branch: it pushes the current HEAD through
-// the gate to trigger a pipeline, and falls back to a rerun when the push was a
-// no-op (the gate already had this commit). Callers must check for an existing
-// active run first (see activeRunID) and apply pre-flight guards.
+// the gate to trigger a pipeline, and directly asks the daemon to start one
+// when the push produced no notification-backed run (for example, an
+// up-to-date retry after a prior notify-push failure). Callers must check for
+// an existing active run first (see activeRunID) and apply pre-flight guards.
 func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent string) (string, error) {
 	pushOptions := formatSkipPushOptions(skipSteps)
 	if opt := formatIntentPushOption(intent); opt != "" {
@@ -219,13 +220,19 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 		return "", fmt.Errorf("push %q to gate: %v", branch, pushErr)
 	}
 
-	// No run appeared: the push was likely up-to-date. Rerun the latest gate
-	// head so `axi run` is still useful when there are no new commits.
-	var rr ipc.RerunResult
-	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent), &rr); err != nil {
+	// No run appeared: the push was likely up-to-date, or an earlier
+	// post-receive notification failed after delivering the ref. Start a run
+	// directly against the already-present gate head so the branch is not stuck
+	// in delivered-but-runless limbo.
+	gatePath, err := canonicalNotifyGatePath(env.p.RepoDir(env.repo.ID))
+	if err != nil {
+		return "", err
+	}
+	var sr ipc.StartRunResult
+	if err := env.client.Call(ipc.MethodStartRun, startRunParams(gatePath, branch, headSHA, skipSteps, intent), &sr); err != nil {
 		return "", fmt.Errorf("no run started for %q: %v", branch, err)
 	}
-	return rr.RunID, nil
+	return sr.RunID, nil
 }
 
 func waitForActiveRunForHead(ctx context.Context, client *ipc.Client, repoID, branch, headSHA string, timeout time.Duration) (*ipc.RunInfo, error) {
@@ -266,6 +273,10 @@ func activeRunLookupParams(repoID, branch string) *ipc.GetActiveRunParams {
 
 func rerunParams(repoID, branch string, skipSteps []types.StepName, intent string) *ipc.RerunParams {
 	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent}
+}
+
+func startRunParams(gate, branch, headSHA string, skipSteps []types.StepName, intent string) *ipc.StartRunParams {
+	return &ipc.StartRunParams{Gate: gate, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps, Intent: intent}
 }
 
 // driveRun polls a run until it reaches an approval gate, a terminal state, or

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,6 +124,81 @@ func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
 		if step.StepName == types.StepReview && step.Status != types.StepStatusSkipped {
 			t.Fatalf("review status = %s, want %s", step.Status, types.StepStatusSkipped)
 		}
+	}
+}
+
+func TestPushReceivedAbsoluteGatePathStableAcrossManyCalls(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+
+	const repoID = "stable-gate-path-repo"
+	_, headSHA := setupTestGitRepo(t, p, d, repoID)
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	gatePath := p.RepoDir(repoID)
+	for i := 0; i < 25; i++ {
+		branch := fmt.Sprintf("feature/stable-%02d", i)
+		var result ipc.PushReceivedResult
+		if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+			Gate: gatePath,
+			Ref:  "refs/heads/" + branch,
+			Old:  "0000000000000000000000000000000000000000",
+			New:  headSHA,
+		}, &result); err != nil {
+			t.Fatalf("push %d with absolute gate path failed: %v", i, err)
+		}
+
+		run := waitForRunTerminalState(t, d, result.RunID)
+		if run.RepoID != repoID {
+			t.Fatalf("run repo ID = %q, want %q", run.RepoID, repoID)
+		}
+		if run.Branch != branch {
+			t.Fatalf("run branch = %q, want %q", run.Branch, branch)
+		}
+	}
+	if got := step.execCnt.Load(); got != 25 {
+		t.Fatalf("step executed %d times, want 25", got)
+	}
+}
+
+func TestPushReceivedRejectsAbsoluteGateWithRegisteredBasenameDifferentPath(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+
+	const repoID = "same-basename-repo"
+	_, headSHA := setupTestGitRepo(t, p, d, repoID)
+
+	wrongGate := filepath.Join(t.TempDir(), repoID+".git")
+	if err := os.MkdirAll(wrongGate, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: wrongGate,
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &result)
+	if err == nil {
+		t.Fatalf("push with wrong absolute gate path unexpectedly created run %q", result.RunID)
+	}
+	if !strings.Contains(err.Error(), "unknown repo for gate") {
+		t.Fatalf("error = %v, want unknown repo for gate", err)
 	}
 }
 
@@ -355,6 +431,45 @@ func TestRerunSkipStepsConfiguresExecutor(t *testing.T) {
 		if step.StepName == types.StepReview && step.Status != types.StepStatusSkipped {
 			t.Fatalf("review status = %s, want %s", step.Status, types.StepStatusSkipped)
 		}
+	}
+}
+
+func TestRerunStartsFirstRunForDeliveredRunlessBranch(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+
+	const repoID = "delivered-runless-repo"
+	_, headSHA := setupTestGitRepo(t, p, d, repoID)
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.RerunResult
+	if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID: repoID,
+		Branch: "main",
+		Intent: "validate the delivered branch",
+	}, &result); err != nil {
+		t.Fatalf("rerun should create first run for delivered branch with no run row: %v", err)
+	}
+	if result.RunID == "" {
+		t.Fatal("expected rerun result to contain a run ID")
+	}
+
+	run := waitForRunTerminalState(t, d, result.RunID)
+	if run.HeadSHA != headSHA {
+		t.Fatalf("run head = %q, want %q", run.HeadSHA, headSHA)
+	}
+	if run.BaseSHA != "0000000000000000000000000000000000000000" {
+		t.Fatalf("first run base = %q, want zero SHA", run.BaseSHA)
+	}
+	if got := step.execCnt.Load(); got != 1 {
+		t.Fatalf("step executed %d times, want 1", got)
 	}
 }
 

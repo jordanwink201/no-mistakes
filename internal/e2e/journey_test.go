@@ -784,15 +784,11 @@ func assertRunsEmpty(t *testing.T, h *Harness) {
 
 func assertRerunNoPreviousRun(t *testing.T, h *Harness) {
 	t.Helper()
-	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
-	if out, err := h.runGit(context.Background(), gateDir, "fetch", h.WorkDir, "main:refs/heads/main"); err != nil {
-		t.Fatalf("seed gate main ref before rerun: %v\n%s", err, out)
-	}
 	out, err := h.Run("rerun")
 	if err == nil {
 		t.Fatalf("nm rerun before any push should fail, got output:\n%s", out)
 	}
-	for _, want := range []string{"rerun pipeline", "no previous run"} {
+	for _, want := range []string{"rerun pipeline", "resolve gate head"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rerun error output should contain %q before any push, got:\n%s", want, out)
 		}

@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,6 +174,38 @@ func TestAxiAgentJourney(t *testing.T) {
 	}
 	if autoRun := h.WaitForRun("feature/axi-yes", 60*time.Second); autoRun.Status != types.RunCompleted {
 		t.Fatalf("feature/axi-yes run status = %s, want completed", autoRun.Status)
+	}
+}
+
+func TestAxiRunCreatesRunForDeliveredRunlessBranch(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
+
+	h.CommitChange("init-axi-runless", "seed.txt", "seed\n", "seed for axi runless init")
+	initWorktree := h.AddWorktree("init-axi-runless")
+	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+		t.Fatalf("nm init: %v\n%s", err, out)
+	}
+
+	const branch = "feature/axi-runless"
+	head := h.CommitChange(branch, "runless.txt", "change\n", "add runless change")
+	worktree := h.AddWorktree(branch)
+
+	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
+	if out, err := h.runGit(context.Background(), gateDir, "fetch", h.WorkDir, branch+":refs/heads/"+branch); err != nil {
+		t.Fatalf("seed delivered gate ref without post-receive: %v\n%s", err, out)
+	}
+
+	out, err := h.RunInDir(worktree, "axi", "run", "--yes", "--intent", "validate the already delivered branch")
+	if err != nil {
+		t.Fatalf("axi run should create a run for delivered-but-runless branch: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "outcome: passed") {
+		t.Fatalf("axi run output should report a passing outcome, got:\n%s", out)
+	}
+
+	run := h.WaitForRun(branch, 60*time.Second)
+	if run.HeadSHA != head {
+		t.Fatalf("run head = %q, want %q", run.HeadSHA, head)
 	}
 }
 

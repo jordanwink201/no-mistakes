@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -25,6 +27,37 @@ func TestParseSkipPushOptionsRejectsUnknownStep(t *testing.T) {
 	_, err := parseSkipPushOptions([]string{"no-mistakes.skip=test,deploy"})
 	if err == nil {
 		t.Fatal("expected unknown step to fail")
+	}
+}
+
+func TestCanonicalNotifyGatePathResolvesRelativeGateFromHookCWD(t *testing.T) {
+	bare := filepath.Join(t.TempDir(), "repo.git")
+	if err := os.MkdirAll(bare, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(bare); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	got, err := canonicalNotifyGatePath(".")
+	if err != nil {
+		t.Fatalf("canonicalNotifyGatePath(.): %v", err)
+	}
+	if !filepath.IsAbs(got) {
+		t.Fatalf("canonical gate path = %q, want absolute", got)
+	}
+	want, err := filepath.EvalSymlinks(bare)
+	if err != nil {
+		want = bare
+	}
+	if got != want {
+		t.Fatalf("canonical gate path = %q, want %q", got, want)
 	}
 }
 

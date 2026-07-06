@@ -421,6 +421,19 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.PushReceivedResult{RunID: runID}, nil
 	})
 
+	srv.Handle(ipc.MethodStartRun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.StartRunParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		slog.Info("start run", "branch", p.Branch, "head", p.HeadSHA, "gate", p.Gate)
+		runID, err := mgr.HandleStartRun(ctx, &p)
+		if err != nil {
+			return nil, err
+		}
+		return &ipc.StartRunResult{RunID: runID}, nil
+	})
+
 	srv.Handle(ipc.MethodRespond, func(_ context.Context, params json.RawMessage) (interface{}, error) {
 		var p ipc.RespondParams
 		if err := json.Unmarshal(params, &p); err != nil {

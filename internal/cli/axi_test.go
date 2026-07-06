@@ -337,6 +337,16 @@ func TestRerunParamsIncludeSkipSteps(t *testing.T) {
 	}
 }
 
+func TestStartRunParamsIncludeGateHeadAndSkipSteps(t *testing.T) {
+	params := startRunParams("/tmp/repo.git", "feature/x", "abc123", []types.StepName{types.StepReview}, "user goal")
+	if params.Gate != "/tmp/repo.git" || params.Branch != "feature/x" || params.HeadSHA != "abc123" || params.Intent != "user goal" {
+		t.Fatalf("unexpected start run params: %#v", params)
+	}
+	if len(params.SkipSteps) != 1 || params.SkipSteps[0] != types.StepReview {
+		t.Fatalf("SkipSteps = %#v, want review", params.SkipSteps)
+	}
+}
+
 func TestPreflightGuardReportsWorkingTreeCheckError(t *testing.T) {
 	t.Chdir(t.TempDir())
 

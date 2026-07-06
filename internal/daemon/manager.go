@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -139,11 +140,51 @@ func (m *RunManager) closeSubscribers(runID string) {
 // repoIDFromGatePath extracts the repo ID from a gate bare repo path.
 // Gate paths look like: <root>/repos/<id>.git
 func repoIDFromGatePath(gatePath string) (string, error) {
-	base := filepath.Base(gatePath)
+	clean := filepath.Clean(strings.TrimSpace(gatePath))
+	if clean == "." || !filepath.IsAbs(clean) {
+		return "", fmt.Errorf("invalid gate path: %s", gatePath)
+	}
+	base := filepath.Base(clean)
 	if !strings.HasSuffix(base, ".git") {
 		return "", fmt.Errorf("invalid gate path: %s", gatePath)
 	}
 	return strings.TrimSuffix(base, ".git"), nil
+}
+
+func sameGatePath(a, b string) bool {
+	cleanA := filepath.Clean(a)
+	cleanB := filepath.Clean(b)
+	if cleanA == cleanB {
+		return true
+	}
+	if resolvedA, err := filepath.EvalSymlinks(cleanA); err == nil {
+		cleanA = resolvedA
+	}
+	if resolvedB, err := filepath.EvalSymlinks(cleanB); err == nil {
+		cleanB = resolvedB
+	}
+	if cleanA == cleanB {
+		return true
+	}
+	infoA, errA := os.Stat(cleanA)
+	infoB, errB := os.Stat(cleanB)
+	return errA == nil && errB == nil && os.SameFile(infoA, infoB)
+}
+
+func (m *RunManager) repoFromGatePath(gatePath string) (*db.Repo, error) {
+	repoID, err := repoIDFromGatePath(gatePath)
+	if err != nil {
+		return nil, err
+	}
+
+	repo, err := m.db.GetRepo(repoID)
+	if err != nil {
+		return nil, fmt.Errorf("get repo: %w", err)
+	}
+	if repo == nil || !sameGatePath(gatePath, m.paths.RepoDir(repoID)) {
+		return nil, fmt.Errorf("unknown repo for gate %s", gatePath)
+	}
+	return repo, nil
 }
 
 // branchFromRef extracts the branch name from a full git ref.
@@ -199,21 +240,51 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 		return "", fmt.Errorf("ref deletion push, no pipeline to run")
 	}
 
-	repoID, err := repoIDFromGatePath(params.Gate)
+	repo, err := m.repoFromGatePath(params.Gate)
 	if err != nil {
 		return "", err
 	}
 
-	repo, err := m.db.GetRepo(repoID)
-	if err != nil {
-		return "", fmt.Errorf("get repo: %w", err)
-	}
-	if repo == nil {
-		return "", fmt.Errorf("unknown repo for gate %s", params.Gate)
-	}
-
 	branch := branchFromRef(params.Ref)
 	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
+}
+
+// HandleStartRun creates a run for a gate branch that is already present in
+// the bare repo. Unlike push_received, it does not depend on post-receive
+// firing for this request; it verifies the requested head against the gate ref
+// before creating the run.
+func (m *RunManager) HandleStartRun(ctx context.Context, params *ipc.StartRunParams) (string, error) {
+	repo, err := m.repoFromGatePath(params.Gate)
+	if err != nil {
+		return "", err
+	}
+
+	branch := branchFromRef(params.Branch)
+	if strings.TrimSpace(branch) == "" {
+		return "", fmt.Errorf("missing branch")
+	}
+	headSHA := strings.TrimSpace(params.HeadSHA)
+	if headSHA == "" || git.IsZeroSHA(headSHA) {
+		return "", fmt.Errorf("invalid head SHA: %s", params.HeadSHA)
+	}
+
+	gateHead, err := m.resolveGateHead(ctx, repo.ID, branch)
+	if err != nil {
+		return "", err
+	}
+	if gateHead != headSHA {
+		return "", fmt.Errorf("gate head mismatch for %s: gate has %s, requested %s", branch, gateHead, headSHA)
+	}
+
+	baseSHA := strings.TrimSpace(params.BaseSHA)
+	if baseSHA == "" {
+		baseSHA, err = m.baseForBranchHead(repo.ID, branch, headSHA)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "start_run", params.SkipSteps, params.Intent)
 }
 
 // HandleRerun creates a new run for the latest gate head on a branch. An
@@ -227,12 +298,29 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 		return "", fmt.Errorf("unknown repo %s", repoID)
 	}
 
-	gateDir := m.paths.RepoDir(repo.ID)
+	headSHA, err := m.resolveGateHead(ctx, repo.ID, branch)
+	if err != nil {
+		return "", err
+	}
+
+	baseSHA, err := m.baseForBranchHead(repoID, branch, headSHA)
+	if err != nil {
+		return "", err
+	}
+
+	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent)
+}
+
+func (m *RunManager) resolveGateHead(ctx context.Context, repoID, branch string) (string, error) {
+	gateDir := m.paths.RepoDir(repoID)
 	headSHA, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("resolve gate head: %w", err)
 	}
+	return headSHA, nil
+}
 
+func (m *RunManager) baseForBranchHead(repoID, branch, headSHA string) (string, error) {
 	runs, err := m.db.GetRunsByRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get runs: %w", err)
@@ -253,15 +341,12 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 		}
 	}
 	if latestForBranch == nil {
-		return "", fmt.Errorf("no previous run for branch %s", branch)
+		return "0000000000000000000000000000000000000000", nil
 	}
-
-	baseSHA := latestForBranch.BaseSHA
 	if matchingHead != nil {
-		baseSHA = matchingHead.BaseSHA
+		return matchingHead.BaseSHA, nil
 	}
-
-	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent)
+	return latestForBranch.BaseSHA, nil
 }
 
 // startRun creates a run, sets up a worktree, and launches pipeline execution.

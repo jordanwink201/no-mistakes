@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
@@ -57,6 +58,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			gatePath, err := canonicalNotifyGatePath(gate)
+			if err != nil {
+				return err
+			}
 
 			p, err := paths.New()
 			if err != nil {
@@ -71,7 +76,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:      gate,
+				Gate:      gatePath,
 				Ref:       ref,
 				Old:       oldSHA,
 				New:       newSHA,
@@ -92,6 +97,20 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("new")
 
 	return cmd
+}
+
+func canonicalNotifyGatePath(gate string) (string, error) {
+	if strings.TrimSpace(gate) == "" {
+		return "", fmt.Errorf("empty gate path")
+	}
+	abs, err := filepath.Abs(gate)
+	if err != nil {
+		return "", fmt.Errorf("resolve gate path %q: %w", gate, err)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	return filepath.Clean(abs), nil
 }
 
 func parseSkipPushOptions(options []string) ([]types.StepName, error) {

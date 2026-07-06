@@ -10,6 +10,7 @@ import (
 // JSON-RPC 2.0 method names.
 const (
 	MethodPushReceived = "push_received"
+	MethodStartRun     = "start_run"
 	MethodGetRun       = "get_run"
 	MethodGetRuns      = "get_runs"
 	MethodGetActiveRun = "get_active_run"
@@ -66,6 +67,19 @@ type PushReceivedParams struct {
 	Ref       string           `json:"ref"`
 	Old       string           `json:"old"`
 	New       string           `json:"new"`
+	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
+	Intent    string           `json:"intent,omitempty"`
+}
+
+// StartRunParams directly starts a run for a gate ref that already exists.
+// It is used when a branch was delivered to the gate bare repo but no
+// post-receive notification created a run, such as an up-to-date retry after a
+// prior notify-push failure.
+type StartRunParams struct {
+	Gate      string           `json:"gate"`
+	Branch    string           `json:"branch"`
+	HeadSHA   string           `json:"head_sha"`
+	BaseSHA   string           `json:"base_sha,omitempty"`
 	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
 	Intent    string           `json:"intent,omitempty"`
 }
@@ -132,6 +146,11 @@ type ShutdownParams struct{}
 
 // PushReceivedResult confirms the push was accepted.
 type PushReceivedResult struct {
+	RunID string `json:"run_id"`
+}
+
+// StartRunResult confirms a direct run was created.
+type StartRunResult struct {
 	RunID string `json:"run_id"`
 }
 
