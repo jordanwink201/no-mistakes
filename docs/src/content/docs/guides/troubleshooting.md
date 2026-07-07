@@ -46,13 +46,20 @@ tail -f ~/.no-mistakes/logs/daemon.log
 
 ### Check for stale artifacts
 
-Stale PID files or sockets from a crashed daemon can block startup:
+A leftover socket from an unclean exit no longer blocks startup: the daemon probes the socket path before binding and removes it only when nothing is listening on it.
+A stale PID file can still confuse status reporting:
 
 ```sh
 ls -la ~/.no-mistakes/daemon.pid ~/.no-mistakes/socket
 ```
 
-If the PID file points at a process that's no longer running, remove both and run `no-mistakes daemon start` again.
+If the PID file points at a process that's no longer running, remove it and run `no-mistakes daemon start` again.
+
+### "a no-mistakes daemon is already running for this NM_HOME"
+
+The daemon holds an exclusive OS lock on `~/.no-mistakes/daemon.lock` for its whole lifetime, so a second daemon for the same root refuses to start instead of stealing the first one's socket.
+The OS releases the lock automatically when the holder exits or crashes, even on SIGKILL, so it cannot go stale: this error always means a genuinely live daemon, and the message includes the holder's PID and start time when available.
+Manage that daemon with `no-mistakes daemon status` and `no-mistakes daemon stop` instead of deleting the lock file - deleting the file does not release the lock and only weakens the guard.
 
 ### Managed service logs
 
@@ -233,6 +240,26 @@ If the PR is still open at the timeout, the step pauses for approval with findin
 You can approve, fix, or skip from the TUI or `no-mistakes axi respond`.
 Use `no-mistakes axi abort` only when you mean to cancel the whole active run.
 
+## Step looks quiet or wedged
+
+Symptom: `no-mistakes axi status` shows an active step with `last_activity` prefixed by `quiet`, or a review/test/lint step appears to run for longer than expected.
+
+`quiet` means the step has not recorded a step-log line or native-agent lifecycle event for longer than `step_quiet_warning` in `~/.no-mistakes/config.yaml`.
+It is only a liveness signal.
+It does not cancel the step, fail the run, or mean the pipeline is safe to bypass.
+
+Start by reading the active run and the step log:
+
+```sh
+no-mistakes axi status
+no-mistakes axi logs --step <step> --full
+```
+
+The `active_steps` table shows how long the step has been active, the latest activity, the native subprocess PID when one is running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
+The step log records native subprocess start, exit, and retry lines plus markers for automatic and user-triggered fix rounds.
+If the step is parked at a gate, use `no-mistakes axi respond` instead of waiting.
+If the run is genuinely stuck and you want to discard it, use `no-mistakes axi abort` and then start a new run.
+
 ## Worktree won't clean up
 
 Symptom: `~/.no-mistakes/worktrees/<repoID>/<runID>/` sticks around after a run ends.
@@ -258,7 +285,7 @@ When state is genuinely wedged:
 
 ```sh
 no-mistakes daemon stop
-rm -rf ~/.no-mistakes/worktrees ~/.no-mistakes/servers ~/.no-mistakes/socket ~/.no-mistakes/daemon.pid
+rm -rf ~/.no-mistakes/worktrees ~/.no-mistakes/servers ~/.no-mistakes/socket ~/.no-mistakes/daemon.pid ~/.no-mistakes/daemon.lock
 no-mistakes daemon start
 ```
 

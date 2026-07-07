@@ -30,6 +30,9 @@ import (
 const (
 	// DefaultCITimeout is the monitor's idle timeout when ci_timeout is unset.
 	DefaultCITimeout = 7 * 24 * time.Hour
+	// DefaultStepQuietWarning is how long a running/fixing step can go without
+	// a new log or lifecycle activity before AXI status marks it quiet.
+	DefaultStepQuietWarning = 10 * time.Minute
 	// CITimeoutUnlimited is the sentinel meaning "monitor until the PR is
 	// merged, closed, or the run is aborted - never self-terminate".
 	// Any non-positive ci_timeout, or the keywords "unlimited", "none",
@@ -46,6 +49,7 @@ type GlobalConfig struct {
 	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
 	CITimeout            time.Duration       `yaml:"-"`
+	StepQuietWarning     time.Duration       `yaml:"-"`
 	LogLevel             string              `yaml:"log_level"`
 	AutoFix              AutoFixRaw
 	Intent               IntentRaw
@@ -61,6 +65,7 @@ type globalConfigRaw struct {
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
 	CITimeout            string              `yaml:"ci_timeout"`
 	BabysitTimeout       string              `yaml:"babysit_timeout"`
+	StepQuietWarning     string              `yaml:"step_quiet_warning"`
 	LogLevel             string              `yaml:"log_level"`
 	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
 	Intent               IntentRaw           `yaml:"intent"`
@@ -149,6 +154,7 @@ type Config struct {
 	AgentPathOverride    map[string]string
 	AgentArgsOverride    map[string][]string
 	CITimeout            time.Duration
+	StepQuietWarning     time.Duration
 	LogLevel             string
 	Commands             Commands
 	IgnorePatterns       []string
@@ -165,8 +171,9 @@ type TestRaw struct {
 // EvidenceRaw is the YAML representation of test-evidence settings.
 // Pointer fields distinguish "not set" (nil) from explicit zero/false values.
 type EvidenceRaw struct {
-	StoreInRepo *bool   `yaml:"store_in_repo"`
-	Dir         *string `yaml:"dir"`
+	StoreInRepo  *bool   `yaml:"store_in_repo"`
+	Dir          *string `yaml:"dir"`
+	UploadToGist *bool   `yaml:"upload_to_gist"`
 }
 
 // Test is the resolved test-step config.
@@ -179,8 +186,9 @@ type Test struct {
 // so they are committed, pushed, and viewable directly on the PR. Otherwise
 // evidence stays in a temporary directory referenced only by local path.
 type Evidence struct {
-	StoreInRepo bool
-	Dir         string
+	StoreInRepo  bool
+	Dir          string
+	UploadToGist bool
 }
 
 // IntentRaw is the YAML representation of user-intent extraction settings.
@@ -272,6 +280,11 @@ agent: auto
 # aborted with: no-mistakes axi abort --run <id>
 ci_timeout: "168h"
 
+# AXI status marks a running/fixing step as quiet when no step log or native
+# agent lifecycle activity has appeared for this long. This is observability
+# only; it never cancels work.
+step_quiet_warning: "10m"
+
 # Log level for daemon output
 # Options: debug, info, warn, error
 log_level: info
@@ -309,12 +322,14 @@ intent:
   # disabled_readers: [codex]
 
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
-# gathers to demonstrate the change works). By default they are kept in a
-# temporary directory and referenced by local path. Opt in to store_in_repo to
-# commit them into the repo under a readable, branch-named directory so they are
-# pushed and render directly on the PR.
+# gathers to demonstrate the change works). By default visual evidence kept in
+# the temporary evidence directory is uploaded to secret GitHub gists when a PR
+# is created, so screenshots render in the PR body. Set upload_to_gist: false to
+# keep the old local-path-only behavior. Opt in to store_in_repo to commit
+# evidence into the repo under a readable, branch-named directory.
 # test:
 #   evidence:
+#     upload_to_gist: true
 #     store_in_repo: true
 #     dir: .no-mistakes/evidence
 `
@@ -635,14 +650,20 @@ func EnsureDefaultGlobalConfig(path string) {
 	}
 }
 
+// DefaultGlobalConfig returns the built-in global defaults.
+func DefaultGlobalConfig() *GlobalConfig {
+	return &GlobalConfig{
+		Agent:            types.AgentAuto,
+		Agents:           []types.AgentName{types.AgentAuto},
+		CITimeout:        DefaultCITimeout,
+		StepQuietWarning: DefaultStepQuietWarning,
+		LogLevel:         "info",
+	}
+}
+
 // LoadGlobal reads global config from path. Returns defaults if file doesn't exist.
 func LoadGlobal(path string) (*GlobalConfig, error) {
-	cfg := &GlobalConfig{
-		Agent:     types.AgentAuto,
-		Agents:    []types.AgentName{types.AgentAuto},
-		CITimeout: DefaultCITimeout,
-		LogLevel:  "info",
-	}
+	cfg := DefaultGlobalConfig()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -688,6 +709,15 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 			return nil, err
 		}
 		cfg.CITimeout = d
+	}
+	if raw.StepQuietWarning != "" {
+		d, err := time.ParseDuration(raw.StepQuietWarning)
+		if err != nil {
+			return nil, fmt.Errorf("parse step_quiet_warning %q: %w", raw.StepQuietWarning, err)
+		}
+		if d > 0 {
+			cfg.StepQuietWarning = d
+		}
 	}
 	if raw.LogLevel != "" {
 		cfg.LogLevel = raw.LogLevel
@@ -852,8 +882,9 @@ func applyIntentOverrides(dst *Intent, src *IntentRaw) {
 func testDefaults() Test {
 	return Test{
 		Evidence: Evidence{
-			StoreInRepo: false,
-			Dir:         ".no-mistakes/evidence",
+			StoreInRepo:  false,
+			Dir:          ".no-mistakes/evidence",
+			UploadToGist: true,
 		},
 	}
 }
@@ -865,6 +896,9 @@ func applyTestOverrides(dst *Test, src *TestRaw) {
 	}
 	if src.Evidence.Dir != nil && strings.TrimSpace(*src.Evidence.Dir) != "" {
 		dst.Evidence.Dir = strings.TrimSpace(*src.Evidence.Dir)
+	}
+	if src.Evidence.UploadToGist != nil {
+		dst.Evidence.UploadToGist = *src.Evidence.UploadToGist
 	}
 }
 
@@ -947,6 +981,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		AgentPathOverride:    global.AgentPathOverride,
 		AgentArgsOverride:    global.AgentArgsOverride,
 		CITimeout:            global.CITimeout,
+		StepQuietWarning:     global.StepQuietWarning,
 		LogLevel:             global.LogLevel,
 		Commands:             repo.Commands,
 		IgnorePatterns:       repo.IgnorePatterns,
