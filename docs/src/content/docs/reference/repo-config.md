@@ -187,11 +187,12 @@ Fields not set here inherit from global config and then the built-in defaults.
 | Field | Type | Default |
 |---|---|---|
 | `test.evidence.upload_to_gist` | `bool` | Inherits from global (default `true`) |
-| `test.evidence.store_in_repo` | `bool` | Inherits from global (default `false`) |
+| `test.evidence.store_in_repo` | `bool` | Inherits from global (default `true`) |
 | `test.evidence.dir` | `string` | Inherits from global (default `.no-mistakes/evidence`) |
 
-By default, visual evidence in the temporary evidence directory is uploaded to secret GitHub gists for GitHub PRs, with local path rendering as the fallback if upload is disabled or fails.
+By default, test evidence is written under `<dir>/<branch-slug>` inside the worktree so push can commit and publish it with the branch.
+Set `store_in_repo: false` only for repos where local-only evidence paths are acceptable.
+For GitHub PRs, approved local visual evidence can still be uploaded to secret gists when `upload_to_gist` is true.
 Use `no-mistakes evidence prune --run <id>` or `--pr <number>` for deliberate post-merge cleanup; deleted gists make existing PR screenshots and evidence links 404.
-Set `store_in_repo: true` to write evidence under `<dir>/<branch-slug>` inside the worktree so push can commit and publish it with the branch.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
-If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
+If `store_in_repo` is false, or if `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
