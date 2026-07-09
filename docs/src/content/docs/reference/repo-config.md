@@ -193,6 +193,7 @@ Fields not set here inherit from global config and then the built-in defaults.
 By default, test evidence is written under `<dir>/<branch-slug>` inside the worktree so push can commit and publish it with the branch.
 Set `store_in_repo: false` only for repos where local-only evidence paths are acceptable.
 For GitHub PRs, approved local visual evidence can still be uploaded to secret gists when `upload_to_gist` is true.
-Use `no-mistakes evidence prune --run <id>` or `--pr <number>` for deliberate post-merge cleanup; deleted gists make existing PR screenshots and evidence links 404.
+The CI monitor automatically deletes those gists when it sees the PR merge or close; deleted gists make existing PR screenshots and evidence links 404.
+Use `no-mistakes evidence prune --run <id>` or `--pr <number>` as a manual fallback for older runs, failed automatic cleanup, or monitors that are no longer running.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 If `store_in_repo` is false, or if `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
