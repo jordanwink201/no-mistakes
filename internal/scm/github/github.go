@@ -151,7 +151,7 @@ func (h *Host) Available(ctx context.Context) error {
 	if h.host != "" {
 		authArgs = append(authArgs, "--hostname", h.host)
 	}
-	if err := h.cmd(ctx, "gh", authArgs...).Run(); err != nil {
+	if err := scm.RunAuthProbe(func() *exec.Cmd { return h.cmd(ctx, "gh", authArgs...) }); err != nil {
 		return errors.New("gh CLI is not authenticated")
 	}
 	return nil
