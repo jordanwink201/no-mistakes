@@ -33,6 +33,14 @@ func TestCreateSecretGistFallsBackToGitForBinaryFiles(t *testing.T) {
 	runGit(t, tmp, "init", "--bare", "--initial-branch=main", bareRepo)
 
 	gitConfig := filepath.Join(tmp, "gitconfig")
+	// The remote path must be forward-slashed in the file:// URL: git config
+	// treats a backslash as an escape char (Windows paths would be mangled), and
+	// a Windows drive path needs the file:///C:/... triple-slash form so the
+	// drive letter is not parsed as a URL authority.
+	remoteURL := filepath.ToSlash(filepath.Join(tmp, "remote"))
+	if !strings.HasPrefix(remoteURL, "/") {
+		remoteURL = "/" + remoteURL
+	}
 	cfg := fmt.Sprintf(`[url "file://%s/"]
 	insteadOf = https://gist.github.com/
 [protocol "file"]
@@ -41,7 +49,7 @@ func TestCreateSecretGistFallsBackToGitForBinaryFiles(t *testing.T) {
 	directory = *
 [init]
 	defaultBranch = main
-`, filepath.Join(tmp, "remote"))
+`, remoteURL)
 	if err := os.WriteFile(gitConfig, []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
