@@ -59,7 +59,7 @@ intent:
 test:
   evidence:
     upload_to_gist: true
-    store_in_repo: true
+    store_in_repo: false
     dir: .no-mistakes/evidence
 ```
 
@@ -331,8 +331,8 @@ Otherwise, accepted candidates are ranked by confidence, which combines the raw 
 ### test.evidence
 
 Test-step evidence storage and publishing settings.
-By default, evidence artifacts are written inside the worktree so screenshots, recordings, and other reviewer-visible files are committed, pushed, and linked from the PR.
-Secret-gist upload remains enabled for GitHub visual evidence produced from approved temporary evidence paths.
+By default, evidence artifacts are written to a managed temporary directory, and GitHub visual evidence is uploaded to secret gists while the PR body is assembled so screenshots and recordings can render without entering the branch diff.
+Set `store_in_repo: true` to use the older repo-committed evidence fallback.
 
 |      |          |
 | ---- | -------- |
@@ -341,10 +341,10 @@ Secret-gist upload remains enabled for GitHub visual evidence produced from appr
 | Field                          | Type     | Default                 | Description                                                                         |
 | ------------------------------ | -------- | ----------------------- | ----------------------------------------------------------------------------------- |
 | `test.evidence.upload_to_gist` | `bool`   | `true`                  | Upload local image/video evidence to secret GitHub gists when assembling PR bodies |
-| `test.evidence.store_in_repo`  | `bool`   | `true`                  | Commit and push test evidence artifacts from inside the repo worktree              |
+| `test.evidence.store_in_repo`  | `bool`   | `false`                 | Commit and push test evidence artifacts from inside the repo worktree              |
 | `test.evidence.dir`            | `string` | `.no-mistakes/evidence` | Repo-relative parent directory used when `store_in_repo` is true                    |
 
-When gist upload fails or is disabled, no-mistakes falls back to local file references.
+When gist upload fails or is disabled, no-mistakes falls back to local file references unless `store_in_repo: true` is explicitly configured, in which case the push step commits evidence from the configured directory.
 The CI monitor automatically deletes uploaded evidence gists when it sees the PR merge or close; deleted gists make existing PR embeds and links 404.
 Use `no-mistakes evidence prune --run <id>` or `--pr <number>` as a manual fallback for older runs, failed automatic cleanup, or monitors that are no longer running.
 

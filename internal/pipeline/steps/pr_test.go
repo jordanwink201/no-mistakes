@@ -692,6 +692,67 @@ func TestPRStep_UploadsLocalVisualEvidenceToSecretGist(t *testing.T) {
 	}
 }
 
+func TestPRStep_UploadsIgnoredInRepoVisualEvidenceToSecretGist(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := setupGitRepo(t)
+	env, logFile := fakeGH(t, "")
+
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".no-mistakes/evidence/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", ".gitignore")
+	gitCmd(t, dir, "commit", "-m", "ignore evidence")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	relImagePath := ".no-mistakes/evidence/feature/checkout.png"
+	imagePath := filepath.Join(dir, filepath.FromSlash(relImagePath))
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imagePath, []byte{0x89, 'P', 'N', 'G'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out := exec.Command("git", "-C", dir, "check-ignore", "--", relImagePath).Run(); out != nil {
+		t.Fatalf("expected %s to be ignored: %v", relImagePath, out)
+	}
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: false, Dir: ".no-mistakes/evidence", UploadToGist: true}
+
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":%q}]}`, relImagePath)
+	testStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.CompleteStep(testStep.ID, 0, 100, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(testStep.ID, findings); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	if !strings.Contains(ghLog, "gist create") {
+		t.Fatalf("expected gist create for ignored in-repo evidence, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "![Checkout screenshot](https://gist.githubusercontent.com/tester/gist123/raw/01-Checkout-screenshot.png)") {
+		t.Fatalf("expected PR body to embed gist raw image, got:\n%s", ghLog)
+	}
+	if status := gitStatusPorcelain(t, dir); status != "" {
+		t.Fatalf("ignored evidence should not be staged or committed, status:\n%s", status)
+	}
+}
+
 func TestPRStep_UnwrapsNestedJSONBody(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

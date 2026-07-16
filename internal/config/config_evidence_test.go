@@ -8,8 +8,8 @@ import (
 
 func TestTestEvidenceDefaults(t *testing.T) {
 	got := testDefaults()
-	if !got.Evidence.StoreInRepo {
-		t.Error("default StoreInRepo should be true")
+	if got.Evidence.StoreInRepo {
+		t.Error("default StoreInRepo should be false; hosted upload is the default publishing path")
 	}
 	if got.Evidence.Dir != ".no-mistakes/evidence" {
 		t.Errorf("default Dir = %q, want .no-mistakes/evidence", got.Evidence.Dir)

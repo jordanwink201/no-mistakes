@@ -232,6 +232,41 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 	}
 }
 
+func TestTestStep_DefaultEvidenceUsesManagedTempDirectoryForHostedUpload(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["manual evidence check"],"testing_summary":"checked evidence","artifacts":[]}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.UserIntent = "Show users a success screen after checkout"
+	sctx.Config.Test = config.Merge(&config.GlobalConfig{}, &config.RepoConfig{}).Test
+
+	step := &TestStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt := ag.calls[0].Prompt
+	wantDir := filepath.Join(os.TempDir(), "no-mistakes-evidence", sctx.Run.ID)
+	if !strings.Contains(prompt, "Write new evidence files into this temporary evidence directory: "+wantDir) {
+		t.Fatalf("expected temporary evidence guidance for default config, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "PR step can upload visual evidence from this directory to a hosted URL") {
+		t.Fatalf("expected hosted-upload guidance for default config, got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "in-repo evidence directory") || strings.Contains(prompt, "committed and pushed automatically") {
+		t.Fatalf("did not expect default evidence guidance to promise repo commits, got:\n%s", prompt)
+	}
+	if _, err := os.Stat(wantDir); err != nil {
+		t.Fatalf("expected managed temp evidence directory to exist: %v", err)
+	}
+}
+
 func TestTestStep_LocalVisualArtifactNeedsApproval(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -245,7 +280,7 @@ func TestTestStep_LocalVisualArtifactNeedsApproval(t *testing.T) {
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.UserIntent = "Show users a success screen after checkout"
-	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: false, Dir: ".no-mistakes/evidence"}
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: false, Dir: ".no-mistakes/evidence", UploadToGist: false}
 
 	step := &TestStep{}
 	outcome, err := step.Execute(sctx)
@@ -274,6 +309,31 @@ func TestTestStep_LocalVisualArtifactNeedsApproval(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected visual artifact warning, got %+v", findings.Items)
+	}
+}
+
+func TestTestStep_ManagedLocalVisualArtifactWithHostedUploadDoesNotNeedApproval(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	localPath := filepath.Join(os.TempDir(), "no-mistakes-evidence", "run-1", "checkout.png")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(fmt.Sprintf(`{"findings":[],"summary":"","tested":["manual checkout"],"testing_summary":"captured checkout screenshot","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":%q}]}`, localPath))}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.UserIntent = "Show users a success screen after checkout"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: false, Dir: ".no-mistakes/evidence", UploadToGist: true}
+
+	step := &TestStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatalf("expected managed local visual artifact to pass when hosted upload is enabled, got findings %s", outcome.Findings)
 	}
 }
 

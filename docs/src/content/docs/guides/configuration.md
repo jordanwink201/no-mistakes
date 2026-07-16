@@ -61,7 +61,7 @@ The rest of this page covers only the cross-cutting rules that involve both file
 
 Explicit `commands.test` and `commands.lint` give you deterministic baseline behavior, while leaving either empty asks the configured agent to fill the gap: empty `commands.test` has the agent detect and run tests, and empty `commands.lint` folds lint into the document step's combined housekeeping pass.
 An empty `commands.format` runs no separate formatter, so configure it explicitly when the push step must format agent changes.
-Either way, available user intent can trigger an evidence-oriented agent follow-up after a successful test baseline, and evidence is committed, pushed, and linked directly from PRs under `test.evidence.dir` by default. Set `test.evidence.store_in_repo: false` only when local-only evidence paths are acceptable.
+Either way, available user intent can trigger an evidence-oriented agent follow-up after a successful test baseline, and GitHub visual evidence is hosted for PR bodies by default. Set `test.evidence.store_in_repo: true` only when a repo intentionally wants evidence committed under `test.evidence.dir`.
 The [Repo Config Reference](/no-mistakes/reference/repo-config/) owns the exact per-command semantics, including command process lifetime and the `ignore_patterns` match rules.
 
 Before a new validation gate starts, its effective agent configuration must resolve to a runnable native agent or ACP bridge; otherwise the gate fails before its first pipeline step, even when explicit commands are configured.

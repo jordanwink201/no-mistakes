@@ -128,7 +128,7 @@ func collectGistEvidenceArtifacts(raw *string, opts testingSummaryOptions) []sta
 		if cleanPath == "" || !isVisualEvidenceArtifact(kind, cleanPath) {
 			continue
 		}
-		source := artifactFilesystemPath(cleanPath, opts)
+		source := artifactGistSourcePath(cleanPath, opts)
 		if source == "" {
 			continue
 		}
@@ -144,6 +144,25 @@ func collectGistEvidenceArtifacts(raw *string, opts testingSummaryOptions) []sta
 		})
 	}
 	return staged
+}
+
+func artifactGistSourcePath(p string, opts testingSummaryOptions) string {
+	if p == "" {
+		return ""
+	}
+	if filepath.IsAbs(p) {
+		if _, ok := artifactPathRelativeToRoot(p, testEvidenceRoot()); ok {
+			return p
+		}
+		if _, ok := artifactPathRelativeToRoot(p, opts.repoRoot); ok {
+			return p
+		}
+		return ""
+	}
+	if opts.repoRoot == "" {
+		return ""
+	}
+	return filepath.Join(opts.repoRoot, filepath.FromSlash(p))
 }
 
 func setArtifactURL(raw string, index int, rawURL string) string {

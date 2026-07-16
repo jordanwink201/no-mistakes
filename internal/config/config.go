@@ -236,11 +236,11 @@ type Test struct {
 	Evidence Evidence
 }
 
-// Evidence is the resolved test-evidence config. StoreInRepo defaults true so
-// reviewer-visible artifacts such as screenshots land in Dir (relative to the
-// repo worktree), then are committed, pushed, and viewable directly on the PR.
-// If StoreInRepo is explicitly disabled, evidence stays in a temporary
-// directory; UploadToGist can publish local visual artifacts for GitHub PRs.
+// Evidence is the resolved test-evidence config. StoreInRepo defaults false so
+// reviewer-visible visual artifacts stay out of the branch diff and are
+// uploaded to hosted URLs for GitHub PRs when UploadToGist is enabled. When
+// StoreInRepo is explicitly enabled, evidence lands in Dir (relative to the
+// repo worktree), then is committed, pushed, and viewable directly on the PR.
 type Evidence struct {
 	StoreInRepo  bool
 	Dir          string
@@ -394,14 +394,16 @@ intent:
   # disabled_readers: [codex]
 
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
-# gathers to demonstrate the change works). By default they are committed into
-# the repo under a readable, branch-named directory so they are pushed and
-# render directly on the PR. Secret-gist upload can still publish local visual
-# artifacts for GitHub PRs when temp fallback evidence is approved.
+# gathers to demonstrate the change works). By default evidence is written to a
+# managed temporary directory and visual artifacts are uploaded to secret gists
+# for GitHub PRs so screenshots/videos render in the PR without entering the
+# branch diff. Set store_in_repo: true to fall back to committing evidence under
+# a readable, branch-named in-repo directory when gist upload is disabled or
+# unavailable.
 test:
   evidence:
     upload_to_gist: true
-    store_in_repo: true
+    store_in_repo: false
     dir: .no-mistakes/evidence
 `
 
@@ -1025,12 +1027,12 @@ func applyIntentOverrides(dst *Intent, src *IntentRaw) {
 }
 
 // testDefaults returns the default test-step settings. Evidence storage is
-// in-repo by default so screenshots and other reviewer-visible artifacts render
-// on PRs instead of leaking local temp paths.
+// temporary by default so screenshots and videos can be hosted for PR bodies
+// without adding generated artifacts to the branch diff.
 func testDefaults() Test {
 	return Test{
 		Evidence: Evidence{
-			StoreInRepo:  true,
+			StoreInRepo:  false,
 			Dir:          ".no-mistakes/evidence",
 			UploadToGist: true,
 		},

@@ -11,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -28,9 +29,9 @@ func gitIgnoresPath(ctx context.Context, workDir, target string) bool {
 	return err == nil
 }
 
-func addLocalVisualArtifactFindings(findings *Findings, workDir string) {
+func addLocalVisualArtifactFindings(findings *Findings, workDir string, allowManagedLocalVisual bool) {
 	for i, artifact := range findings.Artifacts {
-		if !isReviewerVisibleVisualArtifact(artifact) || artifactHasReviewerVisibleLocation(artifact, workDir) {
+		if !isReviewerVisibleVisualArtifact(artifact) || artifactHasReviewerVisibleLocation(artifact, workDir, allowManagedLocalVisual) {
 			continue
 		}
 		label := sanitizePromptText(artifact.Label)
@@ -40,7 +41,7 @@ func addLocalVisualArtifactFindings(findings *Findings, workDir string) {
 		findings.Items = append(findings.Items, Finding{
 			ID:          fmt.Sprintf("test-artifact-%d", i+1),
 			Severity:    "warning",
-			Description: fmt.Sprintf("Visual evidence artifact %q is not reviewer-visible. Screenshots, images, GIFs, and videos must use a repository path that will be pushed or an externally visible URL; otherwise the PR only shows a local file path.", label),
+			Description: fmt.Sprintf("Visual evidence artifact %q is not reviewer-visible. Screenshots, images, GIFs, and videos must use a repository path that will be pushed, an externally visible URL, or the managed no-mistakes evidence directory when hosted upload is enabled; otherwise the PR only shows a local file path.", label),
 			Action:      types.ActionAskUser,
 		})
 	}
@@ -55,7 +56,7 @@ func isReviewerVisibleVisualArtifact(artifact types.TestArtifact) bool {
 	return isImageArtifact(kind, target) || isVideoArtifact(kind, target)
 }
 
-func artifactHasReviewerVisibleLocation(artifact types.TestArtifact, workDir string) bool {
+func artifactHasReviewerVisibleLocation(artifact types.TestArtifact, workDir string, allowManagedLocalVisual bool) bool {
 	if sanitizeArtifactURL(artifact.URL) != "" {
 		return true
 	}
@@ -63,7 +64,19 @@ func artifactHasReviewerVisibleLocation(artifact types.TestArtifact, workDir str
 	if cleanPath == "" {
 		return false
 	}
-	return repoRelativeArtifactPath(cleanPath, testingSummaryOptions{repoRoot: workDir}) != ""
+	opts := testingSummaryOptions{repoRoot: workDir}
+	if repoRelativeArtifactPath(cleanPath, opts) != "" {
+		return true
+	}
+	return allowManagedLocalVisual && artifactFilesystemPath(cleanPath, opts) != ""
+}
+
+func managedVisualEvidenceUploadEnabled(sctx *pipeline.StepContext) bool {
+	return sctx != nil &&
+		sctx.Config != nil &&
+		sctx.Config.Test.Evidence.UploadToGist &&
+		sctx.Repo != nil &&
+		scm.DetectProvider(sctx.Repo.UpstreamURL) == scm.ProviderGitHub
 }
 
 func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
@@ -169,9 +182,16 @@ Previous test findings to address:
 			sctx.Log("user intent available, asking agent to gather test evidence...")
 		}
 		reassessHistory := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+		hostedVisualUpload := managedVisualEvidenceUploadEnabled(sctx)
 		evidenceGuidance := fmt.Sprintf("- Write new evidence files into this temporary evidence directory: %s", evidenceDir)
 		if evidenceLocation.StoreInRepo {
 			evidenceGuidance = fmt.Sprintf("- Write new evidence files into this in-repo evidence directory; it is committed and pushed automatically, so artifacts render directly on the PR: %s", evidenceDir)
+		} else if hostedVisualUpload {
+			evidenceGuidance += "\n- The PR step can upload visual evidence from this directory to a hosted URL for GitHub PRs; record the exact artifact path you create."
+		}
+		visualEvidenceGuidance := "- Screenshots, images, GIFs, and videos must be reviewer-visible: record a repository path that will be pushed or an externally visible URL. A temp/local-only visual artifact will block the test step."
+		if hostedVisualUpload {
+			visualEvidenceGuidance = "- Screenshots, images, GIFs, and videos must be reviewer-visible: record an externally visible URL, a repository path that will be pushed, or an exact path under the dedicated evidence directory so the PR step can upload it. A visual artifact outside those locations will block the test step."
 		}
 		configuredTestCommand := ""
 		if testCmd != "" {
@@ -197,7 +217,7 @@ Task:
 - DOM snapshots, selector assertions, and text-only render summaries are not substitutes for visual evidence when a rendered surface is available.
 - If a UI-facing change has no screenshot, image, video, GIF, or rendered HTML artifact, state why in testing_summary.
 %s
-- Screenshots, images, GIFs, and videos must be reviewer-visible: record a repository path that will be pushed or an externally visible URL. A temp/local-only visual artifact will block the test step.
+%s
 - Do not move, commit, or modify source files only to make evidence linkable. Leave evidence artifacts in the dedicated evidence directory and record their paths exactly where you created them.
 - Only use command output as an artifact when that output directly demonstrates the end-user experience or requested behavior. Generic pass/fail, coverage, or clean-worktree output is not sufficient evidence.
 - Look for existing tests that would generate sufficient evidence. If they exist, run the smallest relevant set.
@@ -226,6 +246,7 @@ Rules:
 				sctx.Run.HeadSHA,
 				configuredTestCommand,
 				evidenceGuidance,
+				visualEvidenceGuidance,
 				reassessHistory,
 			),
 			CWD:        sctx.WorkDir,
@@ -246,7 +267,7 @@ Rules:
 		if len(tested) > 0 {
 			findings.Tested = append(append([]string{}, tested...), findings.Tested...)
 		}
-		addLocalVisualArtifactFindings(&findings, sctx.WorkDir)
+		addLocalVisualArtifactFindings(&findings, sctx.WorkDir, managedVisualEvidenceUploadEnabled(sctx))
 
 		needsApproval := hasBlockingFindings(findings.Items)
 		autoFixable := needsApproval
