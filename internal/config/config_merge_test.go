@@ -24,9 +24,9 @@ func TestMerge_GlobalOnly(t *testing.T) {
 	}
 }
 
-func TestMerge_RepoOverridesAgent(t *testing.T) {
+func TestMerge_RepoOverridesAutoAgent(t *testing.T) {
 	global := &GlobalConfig{
-		Agent:             types.AgentClaude,
+		Agent:             types.AgentAuto,
 		AgentPathOverride: map[string]string{"claude": "/usr/bin/claude"},
 		CITimeout:         4 * time.Hour,
 		LogLevel:          "info",
@@ -40,7 +40,7 @@ func TestMerge_RepoOverridesAgent(t *testing.T) {
 
 	cfg := Merge(global, repo)
 	if cfg.Agent != types.AgentCodex {
-		t.Errorf("agent = %q, want %q (repo override)", cfg.Agent, types.AgentCodex)
+		t.Errorf("agent = %q, want %q (repo override when global is auto)", cfg.Agent, types.AgentCodex)
 	}
 	if cfg.AgentPathOverride["claude"] != "/usr/bin/claude" {
 		t.Errorf("agent path override lost during merge")
@@ -50,6 +50,27 @@ func TestMerge_RepoOverridesAgent(t *testing.T) {
 	}
 	if cfg.CITimeout != 4*time.Hour {
 		t.Errorf("ci_timeout = %v", cfg.CITimeout)
+	}
+}
+
+func TestMerge_ExplicitGlobalAgentOverridesRepoAgent(t *testing.T) {
+	global := &GlobalConfig{
+		Agent:     types.AgentCodex,
+		Agents:    []types.AgentName{types.AgentCodex},
+		CITimeout: 4 * time.Hour,
+		LogLevel:  "info",
+	}
+	repo := &RepoConfig{
+		Agent:  types.AgentClaude,
+		Agents: []types.AgentName{types.AgentClaude},
+	}
+
+	cfg := Merge(global, repo)
+	if cfg.Agent != types.AgentCodex {
+		t.Errorf("agent = %q, want explicit global %q", cfg.Agent, types.AgentCodex)
+	}
+	if len(cfg.Agents) != 1 || cfg.Agents[0] != types.AgentCodex {
+		t.Errorf("agents = %v, want explicit global [codex]", cfg.Agents)
 	}
 }
 
