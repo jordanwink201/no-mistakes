@@ -70,7 +70,7 @@ test:
 
 ### agent
 
-Default agent for all repos and setup-wizard suggestions. Can be overridden per-repo.
+Default agent for all repos and setup-wizard suggestions. `agent: auto` can be overridden per-repo; an explicit global agent or fallback list is authoritative.
 
 |         |                                                                                             |
 | ------- | ------------------------------------------------------------------------------------------- |
@@ -85,7 +85,7 @@ With default paths, `auto` only selects it when both `cursor-agent` and `acpx` r
 Arbitrary `acp:<target>` agents are opt-in and are not considered by `agent: auto`.
 The effective agent configuration must resolve to a runnable runner before a new validation gate starts.
 If an explicit agent is unavailable, `auto` finds no native agent or ACP alias, or no fallback-list entry is available, the gate fails before its first pipeline step rather than reporting a partial command-only validation as passed.
-`no-mistakes doctor` checks the global configuration, while every run repeats resolution after applying any trusted repository-level `agent` override.
+`no-mistakes doctor` checks the global configuration, while every run repeats resolution after applying configuration precedence. When global `agent` is `auto`, a trusted repository-level `agent` supplies the agent. When global `agent` is an explicit value such as `codex` or an ordered fallback list such as `[codex, claude]`, the global setting wins.
 
 You can also set an ordered fallback list:
 

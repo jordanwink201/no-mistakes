@@ -69,7 +69,7 @@ test:
 
 ### agent
 
-Override the default agent for this repo and its setup-wizard suggestions.
+Override `agent: auto` for this repo and its setup-wizard suggestions. An explicit global agent or fallback list remains authoritative.
 
 | | |
 | --- | --- |
@@ -96,7 +96,7 @@ After resolving `auto`, entries that resolve to the same ACP target are deduplic
 If no entry is available, the gate fails before its first pipeline step.
 If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
 Structured findings and schema/output validation problems do not trigger fallback.
-This per-repo `agent` value, including every fallback entry, is still read from the trusted default-branch `.no-mistakes.yaml` unless `allow_repo_commands` is enabled there.
+This per-repo `agent` value, including every fallback entry, is still read from the trusted default-branch `.no-mistakes.yaml` unless `allow_repo_commands` is enabled there. It is used only when global `agent` is `auto`; set a global explicit agent such as `codex` to force one agent across repos.
 
 ### allow_repo_commands
 

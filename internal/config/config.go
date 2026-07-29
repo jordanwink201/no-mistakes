@@ -1240,8 +1240,8 @@ func (c *Config) AutoFixLimit(step types.StepName) int {
 }
 
 // Merge combines global and per-repo config. Per-repo agent values, including
-// ordered fallback lists, override global agent values when non-empty. Commands
-// and ignore patterns come from repo config only.
+// ordered fallback lists, fill in the agent only while global remains auto.
+// Commands and ignore patterns come from repo config only.
 func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	af := autoFixDefaults()
 	applyAutoFixOverrides(&af, &global.AutoFix)
@@ -1286,7 +1286,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		DisableProjectSettings: repo.DisableProjectSettings,
 	}
 
-	if repo.Agent != "" {
+	if repo.Agent != "" && (global.Agent == "" || global.Agent == types.AgentAuto) {
 		cfg.Agent = repo.Agent
 		cfg.Agents = copyAgents(repo.Agents)
 		if len(cfg.Agents) == 0 {
