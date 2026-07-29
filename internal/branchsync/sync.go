@@ -896,15 +896,59 @@ func revList(ctx context.Context, dir string, args ...string) ([]string, error) 
 }
 
 func mergeTreePreservesFinalHead(ctx context.Context, dir, base, local, pushed string) bool {
-	mergedTree, err := git.Run(ctx, dir, "merge-tree", "--write-tree", "--merge-base", base, pushed, local)
-	if err != nil {
-		return false
-	}
 	pushedTree, err := git.Run(ctx, dir, "rev-parse", pushed+"^{tree}")
 	if err != nil {
 		return false
 	}
+	mergedTree, ok := mergeTreeWriteTree(ctx, dir, "--merge-base", base, pushed, local)
+	if !ok {
+		mergedTree, ok = mergeTreeWriteTree(ctx, dir, pushed, local)
+	}
+	if !ok {
+		// Older Git lacks merge-tree --write-tree; compute the proof in an
+		// isolated clone so the operator worktree, index, and refs stay untouched.
+		mergedTree, ok = mergeTreeViaScratchClone(ctx, dir, local, pushed)
+	}
+	if !ok {
+		return false
+	}
 	return mergedTree == pushedTree
+}
+
+func mergeTreeWriteTree(ctx context.Context, dir string, args ...string) (string, bool) {
+	out, err := git.Run(ctx, dir, append([]string{"merge-tree", "--write-tree"}, args...)...)
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(out), true
+}
+
+func mergeTreeViaScratchClone(ctx context.Context, dir, local, pushed string) (string, bool) {
+	source, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false
+	}
+	parent, err := os.MkdirTemp("", "no-mistakes-merge-tree-*")
+	if err != nil {
+		return "", false
+	}
+	defer os.RemoveAll(parent)
+
+	scratch := filepath.Join(parent, "repo")
+	if _, err := git.Run(ctx, parent, "clone", "--quiet", "--no-checkout", "--shared", source, scratch); err != nil {
+		return "", false
+	}
+	if _, err := git.Run(ctx, scratch, "checkout", "--quiet", "--detach", pushed); err != nil {
+		return "", false
+	}
+	if _, err := git.Run(ctx, scratch, "merge", "--quiet", "--no-commit", "--no-ff", local); err != nil {
+		return "", false
+	}
+	tree, err := git.Run(ctx, scratch, "write-tree")
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(tree), true
 }
 
 func (s *Service) remoteName(ctx context.Context) string {
