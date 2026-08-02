@@ -134,22 +134,15 @@ func describePR(pr *scm.PR) string {
 
 func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, host scm.Host, branch, baseSHA string, bodyLimit int) (prContent, []basecampReference, error) {
 	ctx := sctx.Ctx
-	commitLog, _ := git.Log(ctx, sctx.WorkDir, baseSHA, sctx.Run.HeadSHA)
 	commitMessages, _ := git.Run(ctx, sctx.WorkDir, "log", "--format=%B", baseSHA+".."+sctx.Run.HeadSHA)
 	diffStat, _ := git.Run(ctx, sctx.WorkDir, "diff", "--stat", baseSHA+".."+sctx.Run.HeadSHA)
+	finalDiff, err := git.Run(ctx, sctx.WorkDir, "diff", "--name-status", baseSHA+".."+sctx.Run.HeadSHA)
+	if err != nil {
+		return prContent{}, nil, fmt.Errorf("read final branch diff: %w", err)
+	}
 	basecampRefs := collectBasecampReferences(cleanedUserIntent(sctx), commitMessages)
 	basecampMD := renderBasecampSection(basecampRefs)
-
-	// Build the deterministic sections from step rounds.
-	pipelineMD, riskLine, testingMD := s.buildPipelineSection(sctx, host)
-
-	// Build pipeline context for the agent prompt so it can reference findings in the summary.
-	pipelineContext := ""
-	if pipelineMD != "" {
-		pipelineContext = fmt.Sprintf(`
-Pipeline results (reference these naturally in the summary if relevant):
-%s`, pipelineMD)
-	}
+	pipelineMD, testingMD := s.buildPipelineSection(sctx, host)
 
 	prompt := fmt.Sprintf(`Draft a pull request title and summary for the full branch delta.
 
@@ -165,14 +158,15 @@ Rules:
 %s
 - When including a scope, it MUST be a real package/module name that exists in the codebase (for example, a directory under internal/, cmd/, or the equivalent top-level grouping for this project), identified by inspecting the changed paths. Pick the primary module affected by the change, not a secondary or incidental one.
 - Keep the scope at a coarse level, not too granular: a codebase typically has fewer than 10 distinct scopes in use across its history. Prefer a broad module name (e.g. "daemon", "pipeline", "cli") over a narrow file or sub-feature name. If you cannot confidently identify a real primary module, omit the scope and use "type: description".
-- Body: a "## What Changed" section in GitHub-flavored markdown. 1-3 concise bullet points describing the concrete changes in this branch (what code/behavior shifted), not the user's motivation. Do not include Intent, Basecamp, Risk Assessment, Testing, or Pipeline sections - those are prepended/appended separately. The body value must be plain markdown text, never a JSON object or serialized JSON string.
+- Body: a "## What Changed" section in GitHub-flavored markdown. 1-3 concise bullet points describing the concrete changes in this branch (what code/behavior shifted), not the user's motivation. Do not include Intent, Basecamp, Testing, or Pipeline sections - those are prepended/appended separately. The body value must be plain markdown text, never a JSON object or serialized JSON string.
+- Derive every body claim from the final diff. Inspect it directly when the paths and statuses below do not provide enough detail.
 - Do not invent tests or behavior.
 
-Commit history:
+Diff stat:
 %s
 
-Diff stat:
-%s%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, sctx.Repo.DefaultBranch, conventional.ReleaseTypeRule, commitLog, diffStat, pipelineContext, userIntentPromptSection(sctx), executionContextPromptSection())
+Final diff paths and statuses:
+%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, sctx.Repo.DefaultBranch, conventional.ReleaseTypeRule, diffStat, finalDiff, userIntentPromptSection(sctx), executionContextPromptSection())
 
 	prompt += prBodyBudgetPromptSection(bodyLimit)
 
@@ -184,7 +178,7 @@ Diff stat:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		return fallbackPRContent(sctx, branch, commitLog, basecampMD, riskLine, testingMD, pipelineMD, bodyLimit), basecampRefs, nil
+		return fallbackPRContent(sctx, finalDiff, basecampMD, testingMD, pipelineMD, bodyLimit), basecampRefs, nil
 	}
 
 	var content prContent
@@ -201,25 +195,23 @@ Diff stat:
 					slog.Warn("tightened agent PR title type", "from", originalTitle, "to", content.Title)
 				}
 				if bodyLimit > 0 {
-					content.Body = assemblePRBody(sctx, content.Body, basecampMD, riskLine, testingMD, pipelineMD, bodyLimit)
+					content.Body = assemblePRBody(sctx, content.Body, basecampMD, "", testingMD, pipelineMD, bodyLimit)
 				} else {
-					content.Body = buildPRBody(content.Body, basecampMD, riskLine, testingMD, pipelineMD, sctx)
+					content.Body = buildPRBody(content.Body, basecampMD, "", testingMD, pipelineMD, sctx)
 				}
 				return content, basecampRefs, nil
 			}
 		}
 	}
 
-	return fallbackPRContent(sctx, branch, commitLog, basecampMD, riskLine, testingMD, pipelineMD, bodyLimit), basecampRefs, nil
+	return fallbackPRContent(sctx, finalDiff, basecampMD, testingMD, pipelineMD, bodyLimit), basecampRefs, nil
 }
 
-// buildPipelineSection queries step results and rounds from the DB and
-// produces the deterministic pipeline, risk, and testing sections.
-func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, host scm.Host) (string, string, string) {
+func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, host scm.Host) (string, string) {
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
 		slog.Warn("failed to query step results for pipeline summary", "error", err)
-		return "", "", ""
+		return "", ""
 	}
 
 	rounds := make(map[string][]*db.StepRound, len(steps))
@@ -239,9 +231,8 @@ func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, host scm.Host)
 	opts.repoRoot = sctx.WorkDir
 	publishTestingEvidenceGists(sctx, host, steps, rounds, opts)
 
-	pipelineMD, riskLine := BuildPipelineSummary(steps, rounds)
 	testingMD := buildTestingSummary(steps, rounds, opts)
-	return pipelineMD, riskLine, testingMD
+	return BuildPipelineStatusSummary(steps, rounds), testingMD
 }
 
 // unwrapNestedPRBody detects when the agent returned the body as a
@@ -265,7 +256,7 @@ func unwrapNestedPRBody(body string) string {
 // and applies the PR body length guard.
 // prBodyBudgetPromptSection tells the drafting agent about a host's PR-body
 // character cap so it keeps its "## What Changed" section short. The Intent,
-// Basecamp, Risk, Testing, and Pipeline sections are appended deterministically,
+// Basecamp, Testing, and Pipeline sections are appended deterministically,
 // so the agent only controls a slice of the budget; this nudge keeps that slice
 // small.
 // Returns "" when the provider has no practical limit (bodyLimit <= 0).
@@ -273,29 +264,58 @@ func prBodyBudgetPromptSection(bodyLimit int) string {
 	if bodyLimit <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("\n\n- This repository's host caps the entire PR description at %d characters. The Intent, Basecamp, Risk Assessment, and Pipeline sections are appended automatically; a Testing section is included when budget allows. Keep the \"## What Changed\" section to a few short bullet points.", bodyLimit)
+	return fmt.Sprintf("\n\n- This repository's host caps the entire PR description at %d characters. The Intent, Basecamp, and Pipeline sections are appended automatically; a Testing section is included when budget allows. Keep the \"## What Changed\" section to a few short bullet points.", bodyLimit)
 }
 
 // assemblePRBody composes the final PR body from its sections and keeps it
-// within bodyLimit (0 = unlimited). When the full body overruns the cap it
-// first drops the Testing section - the only one that embeds artifact and log
-// file contents and is therefore effectively unbounded - so an Azure DevOps PR
-// sheds log dumps while keeping its Intent, Basecamp, What Changed, Risk, and
-// Pipeline narrative intact. ClampPRBody is the final backstop when even that
-// core overruns (e.g. an unusually long Intent).
+// within bodyLimit (0 = unlimited). Testing is dropped first when needed so
+// final-diff summary, Basecamp context, and compact Pipeline status keep
+// priority.
 func assemblePRBody(sctx *pipeline.StepContext, whatChanged, basecampMD, riskLine, testingMD, pipelineMD string, bodyLimit int) string {
-	full := prependIntentSection(prependBasecampSection(appendGeneratedSections(whatChanged, riskLine, testingMD, pipelineMD), basecampMD), sctx)
+	sections := prependBasecampSection(appendGeneratedSections(whatChanged, riskLine, testingMD, pipelineMD), basecampMD)
+	full := prependIntentSection(sections, sctx)
 	if bodyLimit <= 0 || scm.PRBodyLen(full) <= bodyLimit {
 		return full
 	}
 	if testingMD != "" {
-		core := prependIntentSection(prependBasecampSection(appendGeneratedSections(whatChanged, riskLine, "", pipelineMD), basecampMD), sctx)
+		sections = prependBasecampSection(appendGeneratedSections(whatChanged, riskLine, "", pipelineMD), basecampMD)
+		core := prependIntentSection(sections, sctx)
 		if scm.PRBodyLen(core) <= bodyLimit {
 			return core
 		}
-		return scm.ClampPRBody(core, bodyLimit)
 	}
-	return scm.ClampPRBody(full, bodyLimit)
+	return prependIntentSectionWithinLimit(sections, sctx, bodyLimit, false)
+}
+
+func prependIntentSectionWithinLimit(body string, sctx *pipeline.StepContext, bodyLimit int, byteLimit bool) string {
+	if bodyLimit <= 0 {
+		return prependIntentSection(body, sctx)
+	}
+	bodyLen := scm.PRBodyLen(body)
+	separatorLen := scm.PRBodyLen("\n\n")
+	if byteLimit {
+		bodyLen = len(body)
+		separatorLen = len("\n\n")
+	}
+	if bodyLen >= bodyLimit {
+		if byteLimit {
+			return truncateTextAtLineBoundary(body, bodyLimit, essentialPRBodyTruncationMarker())
+		}
+		return scm.ClampPRBody(body, bodyLimit)
+	}
+	cleaned := cleanedUserIntent(sctx)
+	if cleaned == "" {
+		return body
+	}
+	intent := "## Intent\n\n" + cleaned
+	intentBudget := bodyLimit - bodyLen - separatorLen
+	if intentBudget <= 0 {
+		return body
+	}
+	if byteLimit {
+		return truncateTextAtLineBoundary(intent, intentBudget, essentialPRBodyTruncationMarker()) + "\n\n" + body
+	}
+	return scm.ClampPRBody(intent, intentBudget) + "\n\n" + body
 }
 
 func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) string {
@@ -306,7 +326,6 @@ func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) strin
 func buildPRBody(body, basecampMD, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext) string {
 	body = stripGeneratedSections(body)
 	body = prependBasecampSection(body, basecampMD)
-	body = prependIntentSection(body, sctx)
 	// Basecamp references are durable review context. If an unbounded Testing
 	// section would consume the entire GitHub body budget, omit it before the
 	// essential Intent/Basecamp/What Changed sections are considered for
@@ -314,26 +333,51 @@ func buildPRBody(body, basecampMD, riskLine, testingMD, pipelineMD string, sctx 
 	if basecampMD != "" && testingMD != "" && len(body+generatedEssentialSections(riskLine, testingMD)) > maxPullRequestBodyBytes {
 		testingMD = ""
 	}
-	return appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
+	sections := appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
+	cleaned := cleanedUserIntent(sctx)
+	if cleaned == "" {
+		return sections
+	}
+
+	intent := "## Intent\n\n" + cleaned
+	separator := "\n\n"
+	if len(intent)+len(separator)+len(sections) <= maxPullRequestBodyBytes {
+		return intent + separator + sections
+	}
+	sectionsBudget := maxPullRequestBodyBytes - len(separator) - len(intent)
+	if sectionsBudget > 0 {
+		sections = appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, sectionsBudget)
+		return intent + separator + sections
+	}
+
+	intentBudget := maxPullRequestBodyBytes - len(separator) - len(sections)
+	if intentBudget <= 0 {
+		return sections
+	}
+	return truncateTextAtLineBoundary(intent, intentBudget, essentialPRBodyTruncationMarker()) + separator + sections
 }
 
 func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD string) string {
+	return appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, maxPullRequestBodyBytes)
+}
+
+func appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD string, maxBytes int) string {
 	generatedSections := generatedEssentialSections(riskLine, testingMD)
 	prefix := body + generatedSections
 	if pipelineMD == "" {
-		return essentialPRBodyWithinLimit(body, generatedSections)
+		return essentialPRBodyWithinBudget(body, generatedSections, maxBytes)
 	}
 
 	separator := ""
 	if prefix != "" {
 		separator = "\n\n"
 	}
-	if len(prefix+separator+pipelineMD) <= maxPullRequestBodyBytes {
+	if len(prefix+separator+pipelineMD) <= maxBytes {
 		return prefix + separator + pipelineMD
 	}
 
-	prefix = essentialPRBodyWithinPipelineBudget(body, generatedSections, pipelineMD)
-	return appendPipelineSectionWithinLimit(prefix, pipelineMD)
+	prefix = essentialPRBodyWithinPipelineBudget(body, generatedSections, pipelineMD, maxBytes)
+	return appendPipelineSectionWithinLimit(prefix, pipelineMD, maxBytes)
 }
 
 func generatedEssentialSections(riskLine, testingMD string) string {
@@ -353,21 +397,21 @@ func essentialPRBodyWithinLimit(body, generatedSections string) string {
 	return essentialPRBodyWithinBudget(body, generatedSections, maxPullRequestBodyBytes)
 }
 
-func essentialPRBodyWithinPipelineBudget(body, generatedSections, pipelineMD string) string {
+func essentialPRBodyWithinPipelineBudget(body, generatedSections, pipelineMD string, maxBytes int) string {
 	minPipeline := minimumPipelineRetainingLatestUpdate(pipelineMD)
 	if minPipeline == "" {
 		minPipeline = minimumPipelineOmissionSection(pipelineMD)
 		if minPipeline == "" {
-			return essentialPRBodyWithinLimit(body, generatedSections)
+			return essentialPRBodyWithinBudget(body, generatedSections, maxBytes)
 		}
 	}
 
-	prefixBudget := maxPullRequestBodyBytes - len(minPipeline)
+	prefixBudget := maxBytes - len(minPipeline)
 	if body != "" || generatedSections != "" {
 		prefixBudget -= len("\n\n")
 	}
 	if prefixBudget <= 0 || len(generatedSections) > prefixBudget {
-		return essentialPRBodyWithinLimit(body, generatedSections)
+		return essentialPRBodyWithinBudget(body, generatedSections, maxBytes)
 	}
 	return essentialPRBodyWithinBudget(body, generatedSections, prefixBudget)
 }
@@ -388,19 +432,19 @@ func essentialPRBodyWithinBudget(body, generatedSections string, maxBytes int) s
 	return truncatePRBodySections(body, bodyBudget, essentialPRBodyTruncationMarker()) + generatedSections
 }
 
-func appendPipelineSectionWithinLimit(prefix, pipelineMD string) string {
+func appendPipelineSectionWithinLimit(prefix, pipelineMD string, maxBytes int) string {
 	separator := ""
 	if prefix != "" {
 		separator = "\n\n"
 	}
 	full := prefix + separator + pipelineMD
-	if len(full) <= maxPullRequestBodyBytes {
+	if len(full) <= maxBytes {
 		return full
 	}
 
-	pipelineBudget := maxPullRequestBodyBytes - len(prefix) - len(separator)
+	pipelineBudget := maxBytes - len(prefix) - len(separator)
 	if pipelineBudget <= 0 {
-		return truncateEssentialPRBodyIfNeeded(prefix)
+		return truncateTextAtLineBoundary(prefix, maxBytes, essentialPRBodyTruncationMarker())
 	}
 
 	truncatedPipeline := truncatePipelineSection(pipelineMD, pipelineBudget)
@@ -408,13 +452,13 @@ func appendPipelineSectionWithinLimit(prefix, pipelineMD string) string {
 		return prefix
 	}
 	candidate := prefix + separator + truncatedPipeline
-	if len(candidate) <= maxPullRequestBodyBytes {
+	if len(candidate) <= maxBytes {
 		return candidate
 	}
-	if len(prefix) <= maxPullRequestBodyBytes {
+	if len(prefix) <= maxBytes {
 		return prefix
 	}
-	return truncateEssentialPRBodyIfNeeded(prefix)
+	return truncateTextAtLineBoundary(prefix, maxBytes, essentialPRBodyTruncationMarker())
 }
 
 func truncatePipelineSection(pipelineMD string, maxBytes int) string {
@@ -981,34 +1025,17 @@ func prependBasecampSection(body, basecampMD string) string {
 	return basecampMD + "\n\n" + body
 }
 
-func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, basecampMD, riskLine, testingMD, pipelineMD string, bodyLimit int) prContent {
-	title := ""
-	for _, line := range strings.Split(commitLog, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if idx := strings.IndexByte(line, ' '); idx >= 0 && idx+1 < len(line) {
-			title = strings.TrimSpace(line[idx+1:])
-		}
-		break
-	}
-	if title == "" {
-		title = strings.TrimSpace(branch)
-	}
-	if title == "" {
-		title = "chore: update pull request"
-	} else {
-		title = conventional.TightenTitle(title)
-	}
-	body := fmt.Sprintf("## What Changed\n\n%s", strings.TrimSpace(commitLog))
-	if body == "## What Changed\n\n" {
-		body = fmt.Sprintf("## What Changed\n\n- %s", title)
+func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, basecampMD, testingMD, pipelineMD string, bodyLimit int) prContent {
+	title := "chore: update pull request"
+	diffSummary := strings.TrimSpace(finalDiff)
+	body := "## What Changed\n\nFinal changed paths and statuses:\n\n```text\n" + escapeMarkdownFence(diffSummary) + "\n```"
+	if diffSummary == "" {
+		body = "## What Changed\n\nFinal diff unavailable; no complete scope summary was generated."
 	}
 	if bodyLimit > 0 {
-		body = assemblePRBody(sctx, body, basecampMD, riskLine, testingMD, pipelineMD, bodyLimit)
+		body = assemblePRBody(sctx, body, basecampMD, "", testingMD, pipelineMD, bodyLimit)
 	} else {
-		body = buildPRBody(body, basecampMD, riskLine, testingMD, pipelineMD, sctx)
+		body = buildPRBody(body, basecampMD, "", testingMD, pipelineMD, sctx)
 	}
 	return prContent{
 		Title: title,

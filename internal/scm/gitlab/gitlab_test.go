@@ -319,7 +319,7 @@ func TestGetChecksFallbackRequestsJobDetails(t *testing.T) {
 	if len(checks) != 1 {
 		t.Fatalf("len(checks) = %d, want 1", len(checks))
 	}
-	if checks[0].Name != "lint" || checks[0].Bucket != scm.CheckBucketFail {
+	if checks[0].Name != "lint" || checks[0].Bucket != scm.CheckBucketFail || checks[0].State != "failed" {
 		t.Fatalf("checks[0] = %+v, want failing lint job", checks[0])
 	}
 }

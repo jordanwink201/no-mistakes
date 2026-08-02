@@ -484,6 +484,7 @@ func jobsToChecks(jobs []gitlabJob) []scm.Check {
 		checks = append(checks, scm.Check{
 			Name:        job.Name,
 			Bucket:      gitlabStatusBucket(job.Status),
+			State:       job.Status,
 			CompletedAt: job.completedAt(),
 		})
 	}

@@ -289,14 +289,17 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	if !strings.Contains(ghLog, "pr create") {
 		t.Errorf("expected gh pr create to be called, got:\n%s", ghLog)
 	}
-	if strings.Contains(ghLog, "--title add feature --") {
-		t.Fatalf("expected fallback PR title to reject raw non-conventional commit summary, got:\n%s", ghLog)
+	if !strings.Contains(ghLog, "--title chore: update pull request --body") {
+		t.Fatalf("expected fallback PR title to make no scope claim, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "--title feat: add feature --body") {
-		t.Fatalf("expected fallback PR title to use release-triggering conventional commit format, got:\n%s", ghLog)
+	if strings.Contains(ghLog, "--title feat: add feature") {
+		t.Fatalf("expected fallback PR title to exclude commit-history scope, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "add feature\n\n## Risk Assessment\n\n⚠️ Medium: touches critical error handling") {
-		t.Fatalf("expected fallback PR body to append risk note under Risk Assessment heading, got:\n%s", ghLog)
+	if strings.Contains(ghLog, "touches critical error handling") || strings.Contains(ghLog, "## Risk Assessment") {
+		t.Fatalf("expected fallback PR body to exclude earlier Review rationale, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "A\tfeature.txt") {
+		t.Fatalf("expected fallback PR body to derive scope from the final diff, got:\n%s", ghLog)
 	}
 
 	// Verify PR URL was stored
@@ -571,8 +574,8 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 	if !strings.Contains(ghLog, "keep branch status readable") {
 		t.Fatalf("expected generated PR body in gh call, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "fix footer truncation\n\n## Risk Assessment\n\n⚠️ Medium: touches critical error handling") {
-		t.Fatalf("expected risk note under Risk Assessment heading, got:\n%s", ghLog)
+	if strings.Contains(ghLog, "touches critical error handling") || strings.Contains(ghLog, "## Risk Assessment") {
+		t.Fatalf("expected final PR body to exclude earlier Review rationale, got:\n%s", ghLog)
 	}
 	if strings.Contains(ghLog, "--title feature") {
 		t.Fatalf("expected PR title to avoid raw branch name, got:\n%s", ghLog)
@@ -637,9 +640,22 @@ func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
 	}
 	ghLog := string(logData)
 
-	wantOrder := "## Risk Assessment\n\n⚠️ Medium: touches critical error handling\n\n## Testing\n\n- 🔧 **Test** - 1 issue found → auto-fixed ✅\n\n## Pipeline"
-	if !strings.Contains(ghLog, wantOrder) {
-		t.Fatalf("expected testing section between risk assessment and pipeline, got:\n%s", ghLog)
+	if !strings.Contains(ghLog, "## Pipeline") {
+		t.Fatalf("expected the final PR's pipeline section, got:\n%s", ghLog)
+	}
+	for _, stale := range []string{"## Risk Assessment", "touches critical error handling"} {
+		if strings.Contains(ghLog, stale) {
+			t.Fatalf("final PR must not append earlier Review rationale %q, got:\n%s", stale, ghLog)
+		}
+	}
+	if !strings.Contains(ghLog, "## Testing") {
+		t.Fatalf("expected final PR to include the Testing evidence section, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "- 🔧 **Test** - 1 issue found → auto-fixed ✅") {
+		t.Fatalf("expected final PR to summarize the Test evidence, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "<summary>🔧 **Test** - 1 issue found → auto-fixed ✅</summary>") {
+		t.Fatalf("final PR must retain the compact Test step status, got:\n%s", ghLog)
 	}
 }
 
@@ -1326,18 +1342,23 @@ func TestPRStep_CreateKeepsGeneratedSectionsAfterOversizedIntent(t *testing.T) {
 		"body truncated to keep the PR body within GitHub's 65536-char limit",
 		"## What Changed",
 		"essential summary survives",
-		"## Risk Assessment",
-		"validates generated PR body length handling",
 		"## Testing",
 		"Validated generated PR body length handling.",
+		"## Pipeline",
+		"<summary>✅ **Test** - passed</summary>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected created PR body to contain %q, got:\n%s", want, body)
 		}
 	}
+	for _, unwanted := range []string{"## Risk Assessment"} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("expected created PR body to exclude step-scoped Review rationale %q, got:\n%s", unwanted, body)
+		}
+	}
 }
 
-func TestPRStep_BuildPRContentTruncatesGeneratedPipelineUpdates(t *testing.T) {
+func TestPRStep_BuildPRContentUsesStepStatusWithoutEarlierReviewEvidence(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -1378,18 +1399,15 @@ func TestPRStep_BuildPRContentTruncatesGeneratedPipelineUpdates(t *testing.T) {
 	if !strings.Contains(content.Body, "Keep PR creation postable") || !strings.Contains(content.Body, "essential summary survives") {
 		t.Fatalf("expected intent and summary to survive, got:\n%s", content.Body)
 	}
-	if !strings.Contains(content.Body, "earlier update rounds omitted") {
-		t.Fatalf("expected omission marker, got:\n%s", content.Body)
+	if !strings.Contains(content.Body, "<summary>✅ **Review** - completed</summary>") {
+		t.Fatalf("expected compact Review status, got:\n%s", content.Body)
 	}
-	if strings.Contains(content.Body, "review round 001") {
-		t.Fatalf("expected old pipeline update to be omitted, got:\n%s", content.Body)
-	}
-	if !strings.Contains(content.Body, "review round 140") {
-		t.Fatalf("expected latest pipeline update to be retained, got:\n%s", content.Body)
+	if strings.Contains(content.Body, "review round") || strings.Contains(content.Body, "earlier update rounds omitted") {
+		t.Fatalf("expected earlier Review evidence to remain step-scoped, got:\n%s", content.Body)
 	}
 }
 
-func TestPRStep_CreateCapsBodyAfterPrependedIntent(t *testing.T) {
+func TestPRStep_CreateKeepsIntentAndCompactStatusAfterManyReviewRounds(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -1441,15 +1459,14 @@ func TestPRStep_CreateCapsBodyAfterPrependedIntent(t *testing.T) {
 		"Keep PR creation postable.",
 		"intent context line stays visible",
 		"essential summary survives",
-		"earlier update rounds omitted",
-		"review round 140",
+		"<summary>✅ **Review** - completed</summary>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected final PR body to contain %q", want)
 		}
 	}
-	if strings.Contains(body, "review round 001") {
-		t.Fatal("expected oldest pipeline update to be omitted")
+	if strings.Contains(body, "review round") || strings.Contains(body, "earlier update rounds omitted") {
+		t.Fatal("expected Review evidence to remain step-scoped")
 	}
 }
 
@@ -1465,10 +1482,8 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 
 	content := fallbackPRContent(
 		sctx,
-		"feature",
-		"abc123 add feature",
+		"A\tinternal/pipeline/steps/pr.go",
 		"",
-		"✅ Low: generated PR body length guard only",
 		"## Testing\n\n- go test ./internal/pipeline/steps",
 		pipelineMarkdownForTest(rounds...),
 		0,
@@ -1479,8 +1494,7 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 		"## Intent",
 		"Fallback intent survives.",
 		"## What Changed",
-		"add feature",
-		"## Risk Assessment",
+		"internal/pipeline/steps/pr.go",
 		"## Testing",
 		"earlier update rounds omitted",
 		"review round 140",
@@ -1491,6 +1505,12 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 	}
 	if strings.Contains(content.Body, "review round 001") {
 		t.Fatal("expected oldest pipeline update to be omitted")
+	}
+	if strings.Contains(content.Body, "add feature") {
+		t.Fatalf("expected fallback body to exclude commit-history scope, got:\n%s", content.Body)
+	}
+	if content.Title != "chore: update pull request" {
+		t.Fatalf("fallback title = %q, want neutral title", content.Title)
 	}
 }
 
@@ -1825,7 +1845,7 @@ func TestPRStep_SkipsBeforeBuildingContentWhenProviderCLIUnavailable(t *testing.
 	}
 }
 
-func TestPRStep_ExistingBranchUsesMergeBaseCommitLog(t *testing.T) {
+func TestPRStep_ExistingBranchFallbackUsesMergeBaseFinalDiff(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
@@ -1863,11 +1883,14 @@ func TestPRStep_ExistingBranchUsesMergeBaseCommitLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	ghLog := string(logData)
-	if !strings.Contains(ghLog, "first feature commit") {
-		t.Errorf("expected PR body to include first feature commit, got:\n%s", ghLog)
+	if !strings.Contains(ghLog, "A\tfirst.txt") {
+		t.Errorf("expected PR body to include first final-diff path, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "second feature commit") {
-		t.Errorf("expected PR body to include second feature commit, got:\n%s", ghLog)
+	if !strings.Contains(ghLog, "A\tsecond.txt") {
+		t.Errorf("expected PR body to include second final-diff path, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "first feature commit") || strings.Contains(ghLog, "second feature commit") {
+		t.Errorf("expected PR body to derive scope from the final diff instead of commit history, got:\n%s", ghLog)
 	}
 }
 
