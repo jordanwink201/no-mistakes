@@ -77,7 +77,7 @@ You can't reorder steps. You *can*:
 
 - Swap the agent, or configure an ordered fallback list, globally or per-repo.
 - Set explicit `commands.lint`, `commands.format`, and an optional **targeted** `commands.test` (local intent validation only; not a full CI suite).
-- Host GitHub visual test evidence by default, or explicitly opt into committed in-repo evidence with `test.evidence.store_in_repo: true`.
+- Host GitHub visual test evidence by default with secret gists, or opt into publishing test evidence to an orphan evidence branch with `test.evidence.store_in_repo`.
 - Control auto-fix limits per step.
 - Ignore paths during review and documentation checks.
 - Disable or tune transcript-based intent extraction when intent is not supplied directly.

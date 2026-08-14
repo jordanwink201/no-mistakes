@@ -172,6 +172,8 @@ func (f *recoverFixture) custodyReturned() bool {
 // pipeline_owned, but safety identifies it as recoverable, exposes the run's
 // terminal status, and offers the guarded custody-return action.
 func TestTerminalPrePushRunSurfacesGuardedCustodyRecovery(t *testing.T) {
+	t.Parallel()
+
 	for _, status := range []types.RunStatus{types.RunCancelled, types.RunFailed, types.RunCompleted} {
 		t.Run(string(status), func(t *testing.T) {
 			f := newRecoverFixture(t, status)
@@ -196,6 +198,8 @@ func TestTerminalPrePushRunSurfacesGuardedCustodyRecovery(t *testing.T) {
 // class split: while the run is still active the pre-push block is correct and
 // no custody-return action may be offered.
 func TestActivePrePushRunStaysBlockedWithoutRecovery(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunRunning)
 	state := f.service.InspectCached(f.ctx)
 	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned" {
@@ -225,6 +229,8 @@ func TestActivePrePushRunStaysBlockedWithoutRecovery(t *testing.T) {
 // to the preserved head, stamp custody returned, and leave the branch free for
 // a fresh run.
 func TestRecoverCleanBehindFastForwardsAndReturnsCustody(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	state := f.service.Recover(f.ctx, false)
 	if !state.Recovered || !state.Changed {
@@ -269,8 +275,10 @@ func TestRecoverCleanBehindFastForwardsAndReturnsCustody(t *testing.T) {
 }
 
 func TestRecoverFastForwardRechecksCurrentBranchBeforeMerge(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
-	f.service.beforeRecoverFastForward = func() {
+	f.service.beforeRecoverWorktreeMove = func() {
 		mustRun(t, f.local, "checkout", "-b", "other-clean-branch", f.submitted)
 	}
 	state := f.service.Recover(f.ctx, false)
@@ -289,6 +297,8 @@ func TestRecoverFastForwardRechecksCurrentBranchBeforeMerge(t *testing.T) {
 }
 
 func TestRecoverReportsDirtyFinalStateWhenPostMergeHookMutatesWorktree(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	hooks := filepath.Join(f.local, ".git", "hooks")
 	hook := filepath.Join(hooks, "post-merge")
@@ -310,6 +320,8 @@ func TestRecoverReportsDirtyFinalStateWhenPostMergeHookMutatesWorktree(t *testin
 
 // TestRecoverIdempotentAfterSuccess proves a repeated recover is a safe no-op.
 func TestRecoverIdempotentAfterSuccess(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	if first := f.service.Recover(f.ctx, false); !first.Recovered {
 		t.Fatalf("first recover = %#v", first)
@@ -323,6 +335,8 @@ func TestRecoverIdempotentAfterSuccess(t *testing.T) {
 // TestRecoverWorktreeAlreadyAtPreservedHeadReturnsCustodyWithoutMutation
 // covers the equal cell: nothing to reconcile, custody return only.
 func TestRecoverWorktreeAlreadyAtPreservedHeadReturnsCustodyWithoutMutation(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover")
 	mustRun(t, f.local, "merge", "--ff-only", f.preserved)
@@ -344,6 +358,8 @@ func TestRecoverWorktreeAlreadyAtPreservedHeadReturnsCustodyWithoutMutation(t *t
 // TestRecoverLocalAheadOfPreservedHeadReturnsCustodyWithoutMutation covers the
 // ahead cell: the preserved commits are already incorporated locally.
 func TestRecoverLocalAheadOfPreservedHeadReturnsCustodyWithoutMutation(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunFailed)
 	mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover")
 	mustRun(t, f.local, "merge", "--ff-only", f.preserved)
@@ -369,6 +385,8 @@ func TestRecoverLocalAheadOfPreservedHeadReturnsCustodyWithoutMutation(t *testin
 // TestRecoverDirtyWorktreeRefusesWithoutMutation covers the behind+dirty cell:
 // never fast-forward over uncommitted changes; refuse with actionable options.
 func TestRecoverDirtyWorktreeRefusesWithoutMutation(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "dirty\n")
 	state := f.service.Recover(f.ctx, false)
@@ -391,6 +409,8 @@ func TestRecoverDirtyWorktreeRefusesWithoutMutation(t *testing.T) {
 // the explicit choice - custody at the local head, gate reset to it atomically,
 // preserved commits still reachable through the anchor ref.
 func TestRecoverDivergedRefusesButKeepLocalReturnsCustody(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
 	mustRun(t, f.local, "add", "rescope.txt")
@@ -433,6 +453,8 @@ func TestRecoverDivergedRefusesButKeepLocalReturnsCustody(t *testing.T) {
 // the explicit keep-local choice on a dirty worktree: no worktree mutation is
 // needed, so dirtiness must not block it, and the gate follows the kept head.
 func TestRecoverKeepLocalDirtyBehindReturnsCustodyWithoutTouchingWorktree(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "dirty rescope\n")
 	state := f.service.Recover(f.ctx, true)
@@ -457,6 +479,8 @@ func TestRecoverKeepLocalDirtyBehindReturnsCustodyWithoutTouchingWorktree(t *tes
 // whenever the preserved head cannot be verified and anchored - a moved gate
 // branch, a deleted gate branch, or a missing gate.
 func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
+	t.Parallel()
+
 	t.Run("gate branch moved", func(t *testing.T) {
 		f := newRecoverFixture(t, types.RunCancelled)
 		writer := filepath.Join(t.TempDir(), "writer")
@@ -504,6 +528,8 @@ func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 // and the branch classifies as local_ahead against the pushed binding, whose
 // existing run_pipeline guidance publishes the recovered commits.
 func TestRecoverTerminalPostPushRunWithMovedHead(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	// The run pushed the submitted head upstream, then the pipeline moved on.
 	mustRun(t, f.local, "push", f.remote, "refs/heads/feature/recover:refs/heads/feature/recover")
@@ -539,6 +565,8 @@ func TestRecoverTerminalPostPushRunWithMovedHead(t *testing.T) {
 // TestRecoverRefusesWhenNothingIsStranded pins the not-applicable guard: a
 // healthy behind state (successful push binding) must not be recoverable.
 func TestRecoverRefusesWhenNothingIsStranded(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	state := f.service.Recover(f.ctx, false)
 	if state.Recovered || state.Safety != "blocked_recover_not_applicable" {
@@ -613,6 +641,8 @@ func newUnmovedRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixt
 }
 
 func TestCancellationReconcilesCommittedWorktreeHeadBeforeReleaseClassification(t *testing.T) {
+	t.Parallel()
+
 	f := newUnmovedRecoverFixture(t, types.RunCancelled)
 	if err := f.db.UpdateRunStatus(f.run.ID, types.RunPending); err != nil {
 		t.Fatal(err)
@@ -663,6 +693,8 @@ func TestCancellationReconcilesCommittedWorktreeHeadBeforeReleaseClassification(
 }
 
 func TestCancellationReleaseRequiresVerifiedManagedHead(t *testing.T) {
+	t.Parallel()
+
 	for _, tt := range []struct {
 		name       string
 		worktree   bool
@@ -715,6 +747,8 @@ func TestCancellationReleaseRequiresVerifiedManagedHead(t *testing.T) {
 }
 
 func TestSuccessfulSkippedDeliveryReleasesVerifiedUnmovedHead(t *testing.T) {
+	t.Parallel()
+
 	f := newUnmovedRecoverFixture(t, types.RunCancelled)
 	if err := f.db.UpdateRunStatus(f.run.ID, types.RunPending); err != nil {
 		t.Fatal(err)
@@ -758,6 +792,8 @@ func TestSuccessfulSkippedDeliveryReleasesVerifiedUnmovedHead(t *testing.T) {
 }
 
 func TestLegacyTerminalUnmovedRunKeepsRecoverableCustody(t *testing.T) {
+	t.Parallel()
+
 	f := newUnmovedRecoverFixture(t, types.RunCancelled)
 	if err := f.db.UpdateRunStatus(f.run.ID, types.RunCancelled); err != nil {
 		t.Fatal(err)
@@ -778,6 +814,8 @@ func TestLegacyTerminalUnmovedRunKeepsRecoverableCustody(t *testing.T) {
 // ambiguity, and never recoverable pipeline custody (cancellation releases
 // ownership; there is nothing pipeline-created to recover).
 func TestTerminalUnmovedPrePushRunReportsUserOwnedRelease(t *testing.T) {
+	t.Parallel()
+
 	for _, status := range []types.RunStatus{types.RunCancelled, types.RunFailed} {
 		t.Run(string(status), func(t *testing.T) {
 			f := newUnmovedRecoverFixture(t, status)
@@ -811,6 +849,8 @@ func TestTerminalUnmovedPrePushRunReportsUserOwnedRelease(t *testing.T) {
 // of the unmoved shape: while the run is active the branch is pipeline-owned
 // with a precise reason, recovery refuses as run-active, and nothing mutates.
 func TestActiveUnmovedRunBlocksAsPipelineOwnedWithoutRecovery(t *testing.T) {
+	t.Parallel()
+
 	f := newUnmovedRecoverFixture(t, types.RunRunning)
 	state := f.service.InspectCached(f.ctx)
 	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned" {
@@ -861,6 +901,8 @@ func assertReleasedNoOpRecover(t *testing.T, f *recoverFixture, keepLocal bool, 
 // TestRecoverOnReleasedBranchIsIdempotentNoOp: cancellation already released
 // the branch, so recovery has nothing to do and repeating it changes nothing.
 func TestRecoverOnReleasedBranchIsIdempotentNoOp(t *testing.T) {
+	t.Parallel()
+
 	f := newUnmovedRecoverFixture(t, types.RunCancelled)
 	assertReleasedNoOpRecover(t, f, false, f.submitted)
 	assertReleasedNoOpRecover(t, f, false, f.submitted)
@@ -871,6 +913,8 @@ func TestRecoverOnReleasedBranchIsIdempotentNoOp(t *testing.T) {
 // stays user_owned with the dirt exposed as a fact, and recovery leaves every
 // byte alone.
 func TestReleasedBranchWithDirtyDirectPRWorkStaysUserOwnedUntouched(t *testing.T) {
+	t.Parallel()
+
 	f := newUnmovedRecoverFixture(t, types.RunCancelled)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "direct-pr edit\n")
 	state := f.service.InspectCached(f.ctx)
@@ -888,6 +932,8 @@ func TestReleasedBranchWithDirtyDirectPRWorkStaysUserOwnedUntouched(t *testing.T
 // hold: an out-of-band gate mutation neither leaks into the worktree nor gets
 // rewritten, and the branch stays user-owned.
 func TestReleasedBranchIgnoresHiddenManagedCopyTip(t *testing.T) {
+	t.Parallel()
+
 	f := newUnmovedRecoverFixture(t, types.RunCancelled)
 	writer := filepath.Join(t.TempDir(), "writer")
 	mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
@@ -914,6 +960,8 @@ func TestReleasedBranchIgnoresHiddenManagedCopyTip(t *testing.T) {
 // rewriting it is their own action, and no recovery path may "correct" it by
 // moving the worktree or the gate, clean, dirty, or with --keep-local.
 func TestReleasedBranchAfterUserResetOrDivergenceStaysUserOwned(t *testing.T) {
+	t.Parallel()
+
 	t.Run("reset behind clean", func(t *testing.T) {
 		f := newUnmovedRecoverFixture(t, types.RunCancelled)
 		mustRun(t, f.local, "reset", "--hard", f.base)
@@ -949,6 +997,8 @@ func TestReleasedBranchAfterUserResetOrDivergenceStaysUserOwned(t *testing.T) {
 // binding governs, and the stranded older run can never steal selection or be
 // recovered underneath them.
 func TestUnmovedRunSelectionPrefersNewerAuthoritativeRuns(t *testing.T) {
+	t.Parallel()
+
 	t.Run("newer active run wins", func(t *testing.T) {
 		f := newUnmovedRecoverFixture(t, types.RunCancelled)
 		time.Sleep(1100 * time.Millisecond)
@@ -998,6 +1048,8 @@ func TestUnmovedRunSelectionPrefersNewerAuthoritativeRuns(t *testing.T) {
 // branch and a detached HEAD keep their precise refusals, and neither path can
 // stamp custody on the stranded run.
 func TestUnmovedRunWrongContextsStayRefusedWithoutStamp(t *testing.T) {
+	t.Parallel()
+
 	t.Run("different branch", func(t *testing.T) {
 		f := newUnmovedRecoverFixture(t, types.RunCancelled)
 		mustRun(t, f.local, "checkout", "-b", "feature/other")
@@ -1034,6 +1086,8 @@ func TestUnmovedRunWrongContextsStayRefusedWithoutStamp(t *testing.T) {
 // atomic compare-and-swap, so a racing push to the gate wins and recovery
 // refuses instead of clobbering the newer gate head.
 func TestRecoverConcurrentGatePushLosesCleanly(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
 	mustRun(t, f.local, "add", "rescope.txt")
@@ -1054,5 +1108,489 @@ func TestRecoverConcurrentGatePushLosesCleanly(t *testing.T) {
 	}
 	if f.custodyReturned() {
 		t.Fatal("racing recover stamped custody")
+	}
+}
+
+// newRebasedRecoverFixture reproduces the reported cancelled-validation custody
+// state: the default branch advanced after the branch was submitted, so the
+// pipeline's rebase replayed the operator's commits onto the newer base (new
+// SHAs, identical content) before the run was cancelled. No local commit is an
+// ancestor of the preserved head and no preserved commit is an ancestor of the
+// local head, so a plain equality/ancestry test sees only "diverged" even
+// though the preserved head carries every local change.
+func newRebasedRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
+	t.Helper()
+	return newRebasedRecoverFixtureWithPipelineWork(t, status, nil)
+}
+
+// newRebasedRecoverFixtureWithPipelineWork builds the same rebase state and
+// then lets pipelineWork commit further pipeline changes on the gate branch,
+// modelling the fix rounds a cancelled run may have produced.
+func newRebasedRecoverFixtureWithPipelineWork(t *testing.T, status types.RunStatus, pipelineWork func(t *testing.T, pipelineDir string)) *recoverFixture {
+	t.Helper()
+	ctx := context.Background()
+	root := t.TempDir()
+	remote := filepath.Join(root, "upstream.git")
+	mustRun(t, root, "init", "--bare", remote)
+
+	local := filepath.Join(root, "operator")
+	mustRun(t, root, "init", "-b", "main", local)
+	configureIdentity(t, local)
+	mustWrite(t, filepath.Join(local, "file.txt"), "base\n")
+	mustRun(t, local, "add", "file.txt")
+	mustRun(t, local, "commit", "-m", "base")
+	base := mustRun(t, local, "rev-parse", "HEAD")
+
+	mustRun(t, local, "checkout", "-b", "feature/recover")
+	mustWrite(t, filepath.Join(local, "feature.txt"), "feature one\n")
+	mustRun(t, local, "add", "feature.txt")
+	mustRun(t, local, "commit", "-m", "feature one")
+	mustWrite(t, filepath.Join(local, "feature.txt"), "feature one\nfeature two\n")
+	mustRun(t, local, "commit", "-am", "feature two")
+	submitted := mustRun(t, local, "rev-parse", "HEAD")
+
+	// The default branch advances after submission; that is what makes the
+	// pipeline rebase produce new SHAs for the same logical commits.
+	mustRun(t, local, "checkout", "main")
+	mustWrite(t, filepath.Join(local, "upstream.txt"), "upstream advance\n")
+	mustRun(t, local, "add", "upstream.txt")
+	mustRun(t, local, "commit", "-m", "upstream advance")
+	mustRun(t, local, "checkout", "feature/recover")
+
+	gate := filepath.Join(root, "gate.git")
+	mustRun(t, root, "init", "--bare", gate)
+	mustRun(t, local, "push", gate, "refs/heads/main:refs/heads/main", "refs/heads/feature/recover:refs/heads/feature/recover")
+
+	pipeline := filepath.Join(root, "pipeline")
+	mustRun(t, root, "-c", "core.autocrlf=false", "clone", gate, pipeline)
+	configureIdentity(t, pipeline)
+	mustRun(t, pipeline, "checkout", "feature/recover")
+	mustRun(t, pipeline, "rebase", "origin/main")
+	if pipelineWork != nil {
+		pipelineWork(t, pipeline)
+	}
+	preserved := mustRun(t, pipeline, "rev-parse", "HEAD")
+	mustRun(t, pipeline, "push", "--force", "origin", "HEAD:refs/heads/feature/recover")
+
+	database, err := db.Open(filepath.Join(root, "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	repo, err := database.InsertRepo(local, remote, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature/recover", submitted, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(run.ID, preserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatusWithVerifiedHead(run.ID, status, preserved); err != nil {
+		t.Fatal(err)
+	}
+	run, _ = database.GetRun(run.ID)
+	return &recoverFixture{
+		t: t, ctx: ctx, db: database, repo: repo, run: run,
+		service: &Service{DB: database, Repo: repo, WorkDir: local, GateDir: gate},
+		local:   local, gate: gate, remote: remote,
+		base: base, submitted: submitted, preserved: preserved,
+	}
+}
+
+func (f *recoverFixture) localAnchorRef() string {
+	return "refs/no-mistakes/recover-local/" + f.run.ID
+}
+
+// TestRecoverRebasedPreservedHeadAdoptsWithoutEscalating is the regression for
+// the over-escalating custody return: a cancelled validation whose preserved
+// pipeline head is the operator's own work rebased onto a newer base loses
+// nothing by adopting it, so recovery must succeed instead of refusing as
+// diverged. The relationship is invisible to equality and ancestry alone, which
+// is exactly what made the old decision escalate.
+func TestRecoverRebasedPreservedHeadAdoptsWithoutEscalating(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	if mustRun(t, f.local, "rev-parse", "HEAD") != f.submitted {
+		t.Fatal("fixture did not leave the operator worktree at the submitted head")
+	}
+	// The bug's masking condition: neither head is an ancestor of the other.
+	mustRun(t, f.local, "fetch", "--no-tags", f.gate, "+refs/heads/feature/recover:refs/no-mistakes/test/preserved")
+	if isAncestor(f.ctx, f.local, f.submitted, f.preserved) || isAncestor(f.ctx, f.local, f.preserved, f.submitted) {
+		t.Fatal("fixture is not a rebase divergence: one head is an ancestor of the other")
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if !state.Recovered || !state.Changed {
+		t.Fatalf("rebased recovery escalated instead of returning custody: %#v", state)
+	}
+	if state.State != StateCustodyReturned || state.Safety != "custody_returned" {
+		t.Fatalf("post-recover state = %s/%s", state.State, state.Safety)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("HEAD = %s, want preserved %s", got, f.preserved)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "feature.txt")); got != "feature one\nfeature two\n" {
+		t.Fatalf("local work missing after adopting the preserved head: %q", got)
+	}
+	// The rebase carried the branch onto the advanced base, so the worktree
+	// must now hold the newer base's files too.
+	if got := readOptional(t, filepath.Join(f.local, "upstream.txt")); got != "upstream advance\n" {
+		t.Fatalf("adopted head did not bring the advanced base into the worktree: %q", got)
+	}
+	if clean, reason := worktreeClean(f.ctx, f.local); !clean {
+		t.Fatalf("worktree not clean after adoption: %s", reason)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("preserved anchor = %s, want %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.localAnchorRef()); got != f.submitted {
+		t.Fatalf("pre-recovery local head was not anchored: %s, want %s", got, f.submitted)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("custody not stamped")
+	}
+}
+
+// TestRecoverRebasedPreservedHeadStillEscalatesForUniqueLocalWork is the
+// disconfirming counterfactual: one genuinely unique local commit whose content
+// the preserved head does not carry must keep escalating, because adopting the
+// preserved head would silently discard unlanded work.
+func TestRecoverRebasedPreservedHeadStillEscalatesForUniqueLocalWork(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	mustWrite(t, filepath.Join(f.local, "unlanded.txt"), "unlanded work\n")
+	mustRun(t, f.local, "add", "unlanded.txt")
+	mustRun(t, f.local, "commit", "-m", "unlanded local work")
+	uniqueHead := mustRun(t, f.local, "rev-parse", "HEAD")
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed {
+		t.Fatalf("unique local work was auto-recovered: %#v", state)
+	}
+	if state.Safety != "blocked_recover_diverged" || state.Relation != RelationDiverged {
+		t.Fatalf("recover with unique local work = %s/%s", state.Safety, state.Relation)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != uniqueHead {
+		t.Fatalf("HEAD moved to %s despite unique local work", got)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "unlanded.txt")); got != "unlanded work\n" {
+		t.Fatalf("unlanded work lost: %q", got)
+	}
+	if f.custodyReturned() {
+		t.Fatal("escalation stamped custody")
+	}
+}
+
+// TestRecoverRebasedPreservedHeadEscalatesWhenFixRoundsRewroteOperatorLines
+// pins the deliberate boundary of the narrowed contract. When the pipeline both
+// rebased the branch and superseded the operator's own lines, the operator's
+// content is genuinely absent from the preserved head and nothing available to
+// recovery distinguishes a deliberate fix from a dropped change. No-data-loss
+// wins: the ambiguous case escalates for an operator decision rather than being
+// adopted on a patch-identity guess.
+func TestRecoverRebasedPreservedHeadEscalatesWhenFixRoundsRewroteOperatorLines(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixtureWithPipelineWork(t, types.RunCancelled, func(t *testing.T, pipelineDir string) {
+		mustWrite(t, filepath.Join(pipelineDir, "feature.txt"), "feature one\nfeature two guarded\n")
+		mustRun(t, pipelineDir, "commit", "-am", "no-mistakes(review): guard the second line")
+	})
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed {
+		t.Fatalf("ambiguous rewritten-lines rebase was auto-recovered: %#v", state)
+	}
+	if state.Safety != "blocked_recover_diverged" {
+		t.Fatalf("recover with rewritten operator lines = %s", state.Safety)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("HEAD moved to %s despite an unprovable containment claim", got)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "feature.txt")); got != "feature one\nfeature two\n" {
+		t.Fatalf("escalation touched the worktree: %q", got)
+	}
+	// The preserved commits stay anchored so the operator can still reconcile.
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("preserved anchor = %s, want %s", got, f.preserved)
+	}
+	if f.custodyReturned() {
+		t.Fatal("escalation stamped custody")
+	}
+}
+
+// TestRecoverRebasedPreservedHeadRefusesConcurrentCommitWithoutLosingIt is the
+// no-data-loss-under-concurrency regression. A commit landing after every
+// precondition was observed and after containment was proven must not be
+// destroyed: the branch move is an atomic compare-and-swap against the observed
+// head, so it refuses and the concurrent commit survives untouched.
+func TestRecoverRebasedPreservedHeadRefusesConcurrentCommitWithoutLosingIt(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	var concurrent string
+	f.service.beforeRecoverBranchMove = func() {
+		mustWrite(t, filepath.Join(f.local, "concurrent.txt"), "work committed mid-recovery\n")
+		mustRun(t, f.local, "add", "concurrent.txt")
+		mustRun(t, f.local, "commit", "-m", "concurrent local commit")
+		concurrent = mustRun(t, f.local, "rev-parse", "HEAD")
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed {
+		t.Fatalf("recovery raced a concurrent commit: %#v", state)
+	}
+	if state.Safety != "blocked_recover_assumptions_changed" {
+		t.Fatalf("concurrent-commit refusal = %s", state.Safety)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != concurrent {
+		t.Fatalf("HEAD = %s, want the concurrent commit %s preserved", got, concurrent)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "concurrent.txt")); got != "work committed mid-recovery\n" {
+		t.Fatalf("concurrent work lost: %q", got)
+	}
+	if f.custodyReturned() {
+		t.Fatal("raced recovery stamped custody")
+	}
+}
+
+func TestRecoverRebasedPreservedHeadRollsBackAfterConcurrentCheckout(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.local, "branch", "other-clean-branch", f.submitted)
+	f.service.afterRecoverBranchMove = func() {
+		mustRun(t, f.local, "checkout", "other-clean-branch")
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
+		t.Fatalf("recovery raced a concurrent checkout: %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("feature branch = %s, want rollback to %s", got, f.submitted)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "refs/heads/other-clean-branch"); got != f.submitted {
+		t.Fatalf("concurrently checked-out branch = %s, want %s", got, f.submitted)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "feature.txt")); got != "feature one\nfeature two\n" {
+		t.Fatalf("concurrent checkout worktree changed: %q", got)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "upstream.txt")); got != "" {
+		t.Fatalf("preserved tree leaked into concurrent checkout: %q", got)
+	}
+	if f.custodyReturned() {
+		t.Fatal("raced recovery stamped custody")
+	}
+}
+
+// TestRecoverRebasedPreservedHeadRefusesConcurrentWorktreeEditWithoutLosingIt
+// is the other concurrency axis: an uncommitted edit to a file the move would
+// rewrite must abort the move inside Git itself rather than being overwritten,
+// and the branch must be restored to where it started.
+func TestRecoverRebasedPreservedHeadRefusesConcurrentWorktreeEditWithoutLosingIt(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	f.service.beforeRecoverBranchMove = func() {
+		// upstream.txt exists only on the advanced base, so adopting the
+		// preserved head must write it; an untracked copy blocks that write.
+		mustWrite(t, filepath.Join(f.local, "upstream.txt"), "uncommitted local draft\n")
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed {
+		t.Fatalf("recovery overwrote a concurrent worktree edit: %#v", state)
+	}
+	if state.Safety != "blocked_recover_worktree_busy" {
+		t.Fatalf("concurrent-edit refusal = %s", state.Safety)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "upstream.txt")); got != "uncommitted local draft\n" {
+		t.Fatalf("concurrent worktree edit lost: %q", got)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("branch = %s, want rollback to %s", got, f.submitted)
+	}
+	if f.custodyReturned() {
+		t.Fatal("aborted move stamped custody")
+	}
+}
+
+// TestRecoverRebasedPreservedHeadRefusesDirtyWorktree keeps the ordinary
+// uncommitted-work protection intact: a worktree that is already dirty when
+// recovery starts refuses outright, and --keep-local remains the exit that
+// never touches the worktree.
+func TestRecoverRebasedPreservedHeadRefusesDirtyWorktree(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	mustWrite(t, filepath.Join(f.local, "feature.txt"), "uncommitted edit\n")
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_dirty" {
+		t.Fatalf("dirty rebased recover = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("dirty refusal moved HEAD to %s", got)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "feature.txt")); got != "uncommitted edit\n" {
+		t.Fatalf("dirty refusal overwrote uncommitted work: %q", got)
+	}
+	if f.custodyReturned() {
+		t.Fatal("dirty refusal stamped custody")
+	}
+}
+
+func TestRecoverIncompleteAdoptionDoesNotStampStaleWorktree(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.local, "fetch", "--no-tags", f.gate, "+refs/heads/feature/recover:"+f.anchorRef())
+	mustRun(t, f.local, "update-ref", f.localAnchorRef(), f.submitted, "")
+	mustRun(t, f.local, "update-ref", "refs/heads/feature/recover", f.preserved, f.submitted)
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_incomplete_adoption" {
+		t.Fatalf("incomplete adoption was stamped: %#v", state)
+	}
+	if !strings.Contains(state.Error, f.localAnchorRef()) {
+		t.Fatalf("incomplete-adoption refusal does not name local anchor: %q", state.Error)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("HEAD = %s, want preserved %s", got, f.preserved)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "feature.txt")); got != "feature one\nfeature two\n" {
+		t.Fatalf("pre-recovery worktree changed: %q", got)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "upstream.txt")); got != "" {
+		t.Fatalf("preserved tree was applied unexpectedly: %q", got)
+	}
+	if f.custodyReturned() {
+		t.Fatal("incomplete adoption stamped custody")
+	}
+}
+
+// TestRecoverRebasedPreservedHeadKeepLocalStillKeepsTheLocalHead pins that the
+// explicit keep-local choice still wins over the new adoption path.
+func TestRecoverRebasedPreservedHeadKeepLocalStillKeepsTheLocalHead(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	state := f.service.Recover(f.ctx, true)
+	if !state.Recovered || state.Changed {
+		t.Fatalf("keep-local rebased recover = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("keep-local moved HEAD to %s", got)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("gate branch = %s, want kept local head %s", got, f.submitted)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatal("keep-local lost the preserved anchor")
+	}
+}
+
+// TestRecoverRebasedPreservedHeadRechecksAfterAnchoringLocalHead proves the
+// pre-move guard still catches a branch switch that happens before the move.
+func TestRecoverRebasedPreservedHeadRechecksAfterAnchoringLocalHead(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	f.service.beforeRecoverWorktreeMove = func() {
+		mustRun(t, f.local, "checkout", "-b", "other-clean-branch", f.submitted)
+	}
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
+		t.Fatalf("recover after branch switch = %#v", state)
+	}
+	if got := strings.TrimSpace(mustRun(t, f.local, "branch", "--show-current")); got != "other-clean-branch" {
+		t.Fatalf("current branch = %q", got)
+	}
+	if f.custodyReturned() {
+		t.Fatal("branch-switch refusal stamped custody")
+	}
+}
+
+// TestRecoverSquashedEquivalentPreservedHeadAdopts covers the same containment
+// proof for a fix round that AMENDS or squashes the operator's commits: no
+// commit-level correspondence survives, but the preserved head still carries
+// the operator's exact content, so adopting it loses nothing.
+func TestRecoverSquashedEquivalentPreservedHeadAdopts(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	pipeline := filepath.Join(filepath.Dir(f.local), "squash")
+	mustRun(t, filepath.Dir(f.local), "-c", "core.autocrlf=false", "clone", f.gate, pipeline)
+	configureIdentity(t, pipeline)
+	mustRun(t, pipeline, "checkout", "feature/recover")
+	mustRun(t, pipeline, "reset", "--soft", "origin/main")
+	mustRun(t, pipeline, "commit", "-m", "no-mistakes(rebase): squashed feature")
+	squashed := mustRun(t, pipeline, "rev-parse", "HEAD")
+	mustRun(t, pipeline, "push", "--force", "origin", "HEAD:refs/heads/feature/recover")
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, squashed); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatusWithVerifiedHead(f.run.ID, types.RunCancelled, squashed); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if !state.Recovered || !state.Changed || state.State != StateCustodyReturned {
+		t.Fatalf("squashed-equivalent recovery = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != squashed {
+		t.Fatalf("HEAD = %s, want squashed preserved head %s", got, squashed)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "feature.txt")); got != "feature one\nfeature two\n" {
+		t.Fatalf("adopted content = %q", got)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.localAnchorRef()); got != f.submitted {
+		t.Fatalf("pre-recovery local head was not anchored: %s", got)
+	}
+}
+
+// TestRecoverSquashedPreservedHeadStillEscalatesForDroppedLocalWork is the
+// counterfactual for that proof: when the squash DROPS one of the operator's
+// changes, the preserved head no longer contains it and recovery must escalate
+// rather than silently discard it.
+func TestRecoverSquashedPreservedHeadStillEscalatesForDroppedLocalWork(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	pipeline := filepath.Join(filepath.Dir(f.local), "squash-drop")
+	mustRun(t, filepath.Dir(f.local), "-c", "core.autocrlf=false", "clone", f.gate, pipeline)
+	configureIdentity(t, pipeline)
+	mustRun(t, pipeline, "checkout", "feature/recover")
+	mustRun(t, pipeline, "reset", "--soft", "origin/main")
+	// The second of the operator's two lines never makes it into the squash.
+	mustWrite(t, filepath.Join(pipeline, "feature.txt"), "feature one\n")
+	mustRun(t, pipeline, "add", "feature.txt")
+	mustRun(t, pipeline, "commit", "-m", "no-mistakes(review): squashed without the second line")
+	dropped := mustRun(t, pipeline, "rev-parse", "HEAD")
+	mustRun(t, pipeline, "push", "--force", "origin", "HEAD:refs/heads/feature/recover")
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, dropped); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatusWithVerifiedHead(f.run.ID, types.RunCancelled, dropped); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_diverged" {
+		t.Fatalf("dropped local work was auto-recovered: %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("HEAD moved to %s despite dropped local work", got)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "feature.txt")); got != "feature one\nfeature two\n" {
+		t.Fatalf("dropped-work escalation touched the worktree: %q", got)
+	}
+	if f.custodyReturned() {
+		t.Fatal("dropped-work escalation stamped custody")
 	}
 }

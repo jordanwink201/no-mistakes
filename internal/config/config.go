@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/evidence"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"gopkg.in/yaml.v3"
@@ -57,10 +58,17 @@ const (
 	// with an agent round, but they are not free: each one keeps the monitor
 	// polling the same commit, so the budget stays small by construction.
 	MaxCIRerunTransient = 5
+	// DefaultEvalMaxCases caps the auto-captured local eval corpus. Cases
+	// share one object pool per repository, so the marginal cost of a case is
+	// its JSON records plus the objects its commits actually introduced, not a
+	// copy of the repository. The cap exists to bound that JSON and to keep
+	// the corpus a recent, representative window rather than an archive.
+	DefaultEvalMaxCases = 200
 )
 
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
 type GlobalConfig struct {
+	SourceYAML           []byte              `yaml:"-"`
 	Agent                types.AgentName     `yaml:"agent"`
 	Agents               []types.AgentName   `yaml:"-"`
 	ACPXPath             string              `yaml:"acpx_path"`
@@ -86,6 +94,11 @@ type GlobalConfig struct {
 	Commit CommitRaw
 	Intent IntentRaw
 	Test   TestRaw
+	// Eval is resolved at load time because it is global-only: it describes
+	// this machine's local eval corpus (disk, retention, whether review rounds
+	// record replay provenance), never a repository policy. Keeping it out of
+	// RepoConfig means no pushed branch can enable, disable, or resize it.
+	Eval Eval
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -106,6 +119,7 @@ type globalConfigRaw struct {
 	Commit               CommitRaw           `yaml:"commit"`
 	Intent               IntentRaw           `yaml:"intent"`
 	Test                 TestRaw             `yaml:"test"`
+	Eval                 EvalRaw             `yaml:"eval"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -373,25 +387,30 @@ type AutoFix struct {
 
 // Config is the merged result of global + per-repo configuration.
 type Config struct {
-	Agent                types.AgentName
-	Agents               []types.AgentName
-	ACPXPath             string
-	ACPRegistryOverrides map[string]string
-	AgentPathOverride    map[string]string
-	AgentArgsOverride    map[string][]string
-	CITimeout            time.Duration
-	StepQuietWarning     time.Duration
-	LogLevel             string
-	SessionReuse         bool
-	Commands             Commands
-	IgnorePatterns       []string
-	AutoFix              AutoFix
-	CI                   CI
-	Commit               Commit
-	Intent               Intent
-	Test                 Test
-	Document             Document
-	Review               Review
+	ReplayGlobalYAML      []byte
+	ReplayRepoYAML        []byte
+	TrustedConfigSHA      string
+	CaptureEvalProvenance bool
+	Agent                 types.AgentName
+	Agents                []types.AgentName
+	ACPXPath              string
+	ACPRegistryOverrides  map[string]string
+	AgentPathOverride     map[string]string
+	AgentArgsOverride     map[string][]string
+	CITimeout             time.Duration
+	StepQuietWarning      time.Duration
+	LogLevel              string
+	SessionReuse          bool
+	Eval                  Eval
+	Commands              Commands
+	IgnorePatterns        []string
+	AutoFix               AutoFix
+	CI                    CI
+	Commit                Commit
+	Intent                Intent
+	Test                  Test
+	Document              Document
+	Review                Review
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -428,6 +447,12 @@ type EvidenceRaw struct {
 	StoreInRepo  *bool   `yaml:"store_in_repo"`
 	Dir          *string `yaml:"dir"`
 	UploadToGist *bool   `yaml:"upload_to_gist"`
+	// Branch selects the orphan evidence branch. It names a git ref the
+	// daemon pushes to with the maintainer's credentials, so it is honored
+	// ONLY from the trusted default-branch copy of .no-mistakes.yaml (see
+	// EffectiveRepoConfig): a contributor's pushed branch must not be able to
+	// aim evidence commits at another branch of the repository.
+	Branch *string `yaml:"branch"`
 }
 
 // Test is the resolved test-step config.
@@ -435,15 +460,49 @@ type Test struct {
 	Evidence Evidence
 }
 
-// Evidence is the resolved test-evidence config. StoreInRepo defaults false so
-// reviewer-visible visual artifacts stay out of the branch diff and are
-// uploaded to hosted URLs for GitHub PRs when UploadToGist is enabled. When
-// StoreInRepo is explicitly enabled, evidence lands in Dir (relative to the
-// repo worktree), then is committed, pushed, and viewable directly on the PR.
+// Evidence is the resolved test-evidence config. When StoreInRepo is true, the
+// run publishes its evidence artifacts to the orphan Branch of the same
+// repository, under Dir, and links them from the pull request body. Evidence
+// never enters the pushed code branch, so it never reaches the default branch's
+// history. When UploadToGist is enabled, GitHub runs can additionally host
+// visual artifacts from the managed evidence directory as secret gists.
 type Evidence struct {
 	StoreInRepo  bool
 	Dir          string
 	UploadToGist bool
+	Branch       string
+}
+
+// EvalRaw is the YAML representation of local evaluation-corpus settings.
+// Pointer fields distinguish "not set" (nil) from explicit zero/false values.
+type EvalRaw struct {
+	CaptureProvenance *bool `yaml:"capture_provenance"`
+	AutoCapture       *bool `yaml:"auto_capture"`
+	MaxCases          *int  `yaml:"max_cases"`
+}
+
+// Eval is the resolved local evaluation-corpus config. It is deliberately a
+// first-class configuration key rather than an environment variable: the
+// daemon is a long-lived launchd/systemd service whose unit file is re-rendered
+// on install and update, and only proxy variables survive that re-render, so an
+// environment-gated corpus would silently stop collecting after an update.
+//
+// CaptureProvenance is the upstream half: it makes every review round record
+// the exact commit and configuration inputs a replay needs. A round written
+// with it off can never be captured afterwards, because the pinned global
+// configuration is a point-in-time snapshot that no longer exists anywhere.
+//
+// AutoCapture is the downstream half: it freezes each finished run's review
+// passes into the local corpus without anyone running a command. It has no
+// effect while CaptureProvenance is off, since there is nothing to freeze.
+type Eval struct {
+	CaptureProvenance bool
+	AutoCapture       bool
+	// MaxCases caps the auto-captured corpus. 0 keeps every case. Pruning is
+	// oldest-first and never removes a case that already has recorded
+	// candidate replays, so a corpus you have spent tokens on is never
+	// silently reclaimed underneath a comparison.
+	MaxCases int
 }
 
 // IntentRaw is the YAML representation of user-intent extraction settings.
@@ -639,14 +698,33 @@ intent:
 # gathers to demonstrate the change works). By default evidence is written to a
 # managed temporary directory and visual artifacts are uploaded to secret gists
 # for GitHub PRs so screenshots/videos render in the PR without entering the
-# branch diff. Set store_in_repo: true to fall back to committing evidence under
-# a readable, branch-named in-repo directory when gist upload is disabled or
-# unavailable.
+# branch diff. Set store_in_repo: true to publish them to an orphan evidence
+# branch in the same repository and link them from the PR body. The evidence
+# branch shares no history with your code branches, so artifacts never enter the
+# pushed branch or the default branch.
 test:
   evidence:
     upload_to_gist: true
     store_in_repo: false
     dir: .no-mistakes/evidence
+    branch: no-mistakes/evidence
+
+# Local review evaluation corpus, used by "no-mistakes eval" to compare
+# agent+model candidates against review passes your own pipeline already made.
+# capture_provenance records, on every review round, the exact commits and
+# configuration a replay needs; it cannot be added afterwards, so a round
+# recorded without it is never replayable. auto_capture freezes each finished
+# run's review passes into the corpus so it fills without anyone remembering to
+# collect it. Cases of the same repository share one local object pool, so a
+# case costs its own records plus the objects its commits introduced - not a
+# copy of the repository. max_cases bounds the corpus: the oldest cases are
+# dropped first, and a case that already has recorded replays is never dropped.
+# Set max_cases to 0 to keep every case. Everything stays under <NM_HOME>/eval
+# and is never uploaded anywhere.
+eval:
+  capture_provenance: true
+  auto_capture: true
+  max_cases: 200
 `
 
 // defaultBinary maps agent names to their default binary names.
@@ -1120,21 +1198,27 @@ func DefaultGlobalConfig() *GlobalConfig {
 		DaemonConnectTimeout: DefaultDaemonConnectTimeout,
 		LogLevel:             "info",
 		SessionReuse:         true,
+		Eval:                 evalDefaults(),
 	}
 }
 
 // LoadGlobal reads global config from path. Returns defaults if file doesn't exist.
 func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg := DefaultGlobalConfig()
-
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
+			cfg.SourceYAML = []byte("{}\n")
 			return cfg, nil
 		}
 		return nil, fmt.Errorf("read global config: %w", err)
 	}
+	return LoadGlobalFromBytes(data)
+}
 
+func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
+	cfg := DefaultGlobalConfig()
+	cfg.SourceYAML = append([]byte(nil), data...)
 	var raw globalConfigRaw
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
@@ -1142,6 +1226,12 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
 	if err := validateCommitRaw(raw.Commit); err != nil {
+		return nil, fmt.Errorf("parse global config: %w", err)
+	}
+	if err := validateTestRaw(raw.Test); err != nil {
+		return nil, fmt.Errorf("parse global config: %w", err)
+	}
+	if err := validateEvalRaw(raw.Eval); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
 
@@ -1205,6 +1295,7 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg.Commit = raw.Commit
 	cfg.Intent = raw.Intent
 	cfg.Test = raw.Test
+	applyEvalOverrides(&cfg.Eval, &raw.Eval)
 
 	return cfg, nil
 }
@@ -1273,6 +1364,9 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	if err := validateReviewRaw(cfg.Review); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
+	if err := validateTestRaw(cfg.Test); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	if cfg.AutoFix.CI == nil {
@@ -1372,6 +1466,8 @@ func validatePathInstructionGlob(pattern string) error {
 // Non-executing fields (ignore patterns, auto-fix, commit, intent, test) are
 // always taken from the pushed copy, matching prior behavior, since they cannot
 // run arbitrary shell, select a process, or spend the maintainer's CI minutes.
+// The single exception inside test is evidence.branch, which names a git ref
+// the daemon pushes to and is therefore trusted-only.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
 	if pushed == nil {
 		pushed = &RepoConfig{}
@@ -1401,12 +1497,20 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// billed to the repository. It is trusted-only for that reason, so a
 		// pushed branch cannot raise its own rerun budget to the cap.
 		effective.CI = trusted.CI
+		// test.evidence.branch names the git ref evidence commits are pushed
+		// to with the maintainer's credentials. It is trusted-only so a pushed
+		// branch cannot aim them at another branch of the repository; the rest
+		// of test.evidence stays pushed-readable because it only picks where
+		// artifacts are collected. The publisher independently refuses any
+		// branch without its marker file, so this is defense in depth.
+		effective.Test.Evidence.Branch = trusted.Test.Evidence.Branch
 	} else {
 		effective.Document = DocumentRaw{}
 		effective.Review = ReviewRaw{}
 		effective.DisableProjectSettings = false
 		effective.NoCI = false
 		effective.CI = CIRaw{}
+		effective.Test.Evidence.Branch = nil
 	}
 	if allowRepoCommands {
 		return &effective
@@ -1473,20 +1577,25 @@ func applyIntentOverrides(dst *Intent, src *IntentRaw) {
 	}
 }
 
-// testDefaults returns the default test-step settings. Evidence storage is
-// temporary by default so screenshots and videos can be hosted for PR bodies
-// without adding generated artifacts to the branch diff.
+// testDefaults returns the default test-step settings. Evidence publication is
+// opt-in (off by default); when enabled it lands under .no-mistakes/evidence on
+// the default orphan evidence branch. GitHub visual evidence gist upload stays
+// on by default so screenshots and videos can render without entering the code
+// branch diff.
 func testDefaults() Test {
 	return Test{
 		Evidence: Evidence{
 			StoreInRepo:  false,
 			Dir:          ".no-mistakes/evidence",
 			UploadToGist: true,
+			Branch:       evidence.DefaultBranch,
 		},
 	}
 }
 
 // applyTestOverrides applies non-nil raw values onto resolved defaults.
+// The branch name is validated at config parse time (validateTestRaw), so an
+// unusable value never reaches here.
 func applyTestOverrides(dst *Test, src *TestRaw) {
 	if src.Evidence.StoreInRepo != nil {
 		dst.Evidence.StoreInRepo = *src.Evidence.StoreInRepo
@@ -1497,6 +1606,61 @@ func applyTestOverrides(dst *Test, src *TestRaw) {
 	if src.Evidence.UploadToGist != nil {
 		dst.Evidence.UploadToGist = *src.Evidence.UploadToGist
 	}
+	if src.Evidence.Branch != nil && strings.TrimSpace(*src.Evidence.Branch) != "" {
+		if branch, err := evidence.NormalizeBranch(*src.Evidence.Branch); err == nil {
+			dst.Evidence.Branch = branch
+		}
+	}
+}
+
+// evalDefaults returns the default local evaluation-corpus settings. Both
+// halves are on by default: provenance is unrecoverable if it was not recorded
+// at review time, and a corpus nobody has to remember to collect is the only
+// kind that exists when a comparison is finally needed. The default cap keeps
+// the corpus a rolling window rather than an unbounded archive.
+func evalDefaults() Eval {
+	return Eval{CaptureProvenance: true, AutoCapture: true, MaxCases: DefaultEvalMaxCases}
+}
+
+// applyEvalOverrides applies non-nil raw values onto resolved defaults. The
+// max_cases value is validated at config parse time (validateEvalRaw).
+func applyEvalOverrides(dst *Eval, src *EvalRaw) {
+	if src.CaptureProvenance != nil {
+		dst.CaptureProvenance = *src.CaptureProvenance
+	}
+	if src.AutoCapture != nil {
+		dst.AutoCapture = *src.AutoCapture
+	}
+	if src.MaxCases != nil && *src.MaxCases >= 0 {
+		dst.MaxCases = *src.MaxCases
+	}
+}
+
+// validateEvalRaw fails the config closed on a negative eval.max_cases. A
+// negative cap has no defensible meaning here - it is neither "keep everything"
+// (0) nor a bound - so surfacing the typo beats guessing which one was meant.
+func validateEvalRaw(raw EvalRaw) error {
+	if raw.MaxCases != nil && *raw.MaxCases < 0 {
+		return fmt.Errorf("eval.max_cases must be 0 (keep every case) or greater, got %d", *raw.MaxCases)
+	}
+	return nil
+}
+
+// validateTestRaw fails the config closed on a test.evidence.branch value Git
+// would reject as a branch name. Rejecting the config surfaces the typo where
+// the user can fix it, rather than letting a run reach the push and fail there.
+//
+// Like validateReviewRaw this deliberately also runs on the PUSHED copy even
+// though EffectiveRepoConfig only honors the trusted branch name: a branch
+// carrying an invalid value has to fail before it merges.
+func validateTestRaw(test TestRaw) error {
+	if test.Evidence.Branch == nil {
+		return nil
+	}
+	if _, err := evidence.NormalizeBranch(*test.Evidence.Branch); err != nil {
+		return fmt.Errorf("test.evidence.branch: %w", err)
+	}
+	return nil
 }
 
 // autoFixDefaults returns the default auto-fix configuration.
@@ -1617,15 +1781,18 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		StepQuietWarning:     global.StepQuietWarning,
 		LogLevel:             global.LogLevel,
 		SessionReuse:         global.SessionReuse,
-		Commands:             repo.Commands,
-		IgnorePatterns:       repo.IgnorePatterns,
-		AutoFix:              af,
-		CI:                   ci,
-		Commit:               commit,
-		Intent:               intent,
-		Test:                 test,
-		Document:             Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
-		Review:               Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
+		// Eval is global-only by design (see GlobalConfig.Eval), so it is
+		// copied straight through with no repository override step.
+		Eval:           global.Eval,
+		Commands:       repo.Commands,
+		IgnorePatterns: repo.IgnorePatterns,
+		AutoFix:        af,
+		CI:             ci,
+		Commit:         commit,
+		Intent:         intent,
+		Test:           test,
+		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
+		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
@@ -1641,4 +1808,22 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	}
 
 	return cfg
+}
+
+// EnableEvalProvenance pins the exact configuration this run reviews under so
+// a later replay grades a candidate against identical conditions. The caller
+// decides whether to call it (see Eval.CaptureProvenance); this is the single
+// owner of what "exact provenance" contains.
+func (c *Config) EnableEvalProvenance(global *GlobalConfig, repo *RepoConfig) error {
+	if c == nil || global == nil || repo == nil {
+		return fmt.Errorf("eval provenance requires merged, global, and repository configuration")
+	}
+	repoYAML, err := yaml.Marshal(repo)
+	if err != nil {
+		return fmt.Errorf("serialize eval repository configuration: %w", err)
+	}
+	c.ReplayGlobalYAML = append([]byte(nil), global.SourceYAML...)
+	c.ReplayRepoYAML = repoYAML
+	c.CaptureEvalProvenance = true
+	return nil
 }
