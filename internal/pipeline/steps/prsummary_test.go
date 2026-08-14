@@ -27,6 +27,25 @@ func TestNoMistakesRequiredWorkflowChecksPipelineSignature(t *testing.T) {
 	}
 }
 
+func TestNoMistakesRequiredWorkflowScopesForkSelfHostingException(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := os.ReadFile(filepath.Join("..", "..", "..", ".github", "workflows", "no-mistakes-required.yml"))
+	if err != nil {
+		t.Fatalf("read required workflow: %v", err)
+	}
+	text := string(workflow)
+	if !strings.Contains(text, "REPOSITORY: ${{ github.repository }}") {
+		t.Fatalf("required workflow does not bind the repository for the fork exception")
+	}
+	if !strings.Contains(text, `if [ "$REPOSITORY" = 'jordanwink201/no-mistakes' ]; then`) {
+		t.Fatalf("required workflow does not scope the fork exception to jordanwink201/no-mistakes")
+	}
+	if strings.Contains(text, "kunchenguid/no-mistakes' ]; then") {
+		t.Fatalf("required workflow must not exempt upstream kunchenguid/no-mistakes")
+	}
+}
+
 func TestBuildPipelineSummary_AllClean(t *testing.T) {
 	t.Parallel()
 	steps := []*db.StepResult{

@@ -39,11 +39,17 @@ jobs:
     steps:
       - name: Verify no-mistakes signature in PR body
         env:
+          REPOSITORY: ${{ github.repository }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -eu
+          if [ "$REPOSITORY" = 'jordanwink201/no-mistakes' ]; then
+            echo "Maintained fork self-hosting exception: PR #${PR_NUMBER} does not need the upstream no-mistakes signature."
+            exit 0
+          fi
+
           marker='Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)'
           if printf '%s' "${PR_BODY:-}" | grep -qF -- "$marker"; then
             echo "Found no-mistakes signature in PR #${PR_NUMBER} body."
