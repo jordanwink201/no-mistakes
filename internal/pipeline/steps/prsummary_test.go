@@ -38,7 +38,7 @@ func TestNoMistakesRequiredWorkflowScopesForkSelfHostingException(t *testing.T) 
 	if !strings.Contains(text, "REPOSITORY: ${{ github.repository }}") {
 		t.Fatalf("required workflow does not bind the repository for the fork exception")
 	}
-	if !strings.Contains(text, `if [ "$REPOSITORY" = 'jordanwink201/no-mistakes' ]; then`) {
+	if !strings.Contains(text, `if [ "${REPOSITORY:-}" = 'jordanwink201/no-mistakes' ]; then`) {
 		t.Fatalf("required workflow does not scope the fork exception to jordanwink201/no-mistakes")
 	}
 	if strings.Contains(text, "kunchenguid/no-mistakes' ]; then") {

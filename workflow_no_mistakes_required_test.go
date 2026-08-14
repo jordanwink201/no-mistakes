@@ -122,6 +122,26 @@ func TestNoMistakesRequiredWorkflowExecutesEveryBodyEvent(t *testing.T) {
 	}
 }
 
+func TestNoMistakesRequiredWorkflowScopesForkSelfHostingException(t *testing.T) {
+	workflow := loadRequiredWorkflow(t)
+	marker := "Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)"
+	events := []requiredWorkflowEvent{
+		{Action: "opened", Body: "manual fork sync", Repository: "jordanwink201/no-mistakes", PRNumber: 4, RunID: 4001, RunNumber: 1},
+		{Action: "opened", Body: "manual upstream PR", Repository: "kunchenguid/no-mistakes", PRNumber: 5, RunID: 4002, RunNumber: 2},
+		{Action: "opened", Body: "## Pipeline\n\n" + marker, PRNumber: 6, RunID: 4003, RunNumber: 3},
+	}
+
+	got := executeRequiredWorkflowFixture(t, workflow, events)
+	want := []requiredWorkflowResult{
+		{RunID: 4001, RunNumber: 1, Action: "opened", Executed: true, Conclusion: "success"},
+		{RunID: 4002, RunNumber: 2, Action: "opened", Executed: true, Conclusion: "failure"},
+		{RunID: 4003, RunNumber: 3, Action: "opened", Executed: true, Conclusion: "success"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("fork exception results =\n  %v\nwant exact fork exemption without weakening upstream or unset fallback:\n  %v", got, want)
+	}
+}
+
 func TestNoMistakesRequiredWorkflowPreservesHeadEventCoalescing(t *testing.T) {
 	workflow := loadRequiredWorkflow(t)
 	events := []requiredWorkflowEvent{
@@ -230,12 +250,13 @@ type requiredWorkflowStep struct {
 }
 
 type requiredWorkflowEvent struct {
-	Action    string
-	Body      string
-	HeadSHA   string
-	PRNumber  int64
-	RunID     int64
-	RunNumber int64
+	Action     string
+	Body       string
+	Repository string
+	HeadSHA    string
+	PRNumber   int64
+	RunID      int64
+	RunNumber  int64
 }
 
 type requiredWorkflowResult struct {
@@ -302,6 +323,9 @@ func executeRequiredWorkflowFixture(t *testing.T, workflow requiredWorkflow, eve
 			"PR_AUTHOR=first-time-fork-contributor",
 			"PR_NUMBER="+strconv.FormatInt(event.PRNumber, 10),
 		)
+		if event.Repository != "" {
+			cmd.Env = append(cmd.Env, "REPOSITORY="+event.Repository)
+		}
 		var output bytes.Buffer
 		cmd.Stdout = &output
 		cmd.Stderr = &output

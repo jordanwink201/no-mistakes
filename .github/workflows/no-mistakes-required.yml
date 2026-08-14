@@ -45,7 +45,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -eu
-          if [ "$REPOSITORY" = 'jordanwink201/no-mistakes' ]; then
+          if [ "${REPOSITORY:-}" = 'jordanwink201/no-mistakes' ]; then
             echo "Maintained fork self-hosting exception: PR #${PR_NUMBER} does not need the upstream no-mistakes signature."
             exit 0
           fi
