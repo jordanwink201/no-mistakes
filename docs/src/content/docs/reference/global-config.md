@@ -67,6 +67,7 @@ test:
     upload_to_gist: true
     store_in_repo: false
     dir: .no-mistakes/evidence
+    branch: no-mistakes/evidence
 ```
 
 ## Fields
@@ -393,7 +394,7 @@ Otherwise, accepted candidates are ranked by confidence, which combines the raw 
 
 Test-step evidence storage and publishing settings.
 By default, evidence artifacts are written to a managed temporary directory, and GitHub visual evidence is uploaded to secret gists while the PR body is assembled so screenshots and recordings can render without entering the branch diff.
-Set `store_in_repo: true` to use the older repo-committed evidence fallback.
+Set `store_in_repo: true` to publish evidence to an orphan evidence branch instead of committing artifacts to the pushed code branch.
 
 |      |          |
 | ---- | -------- |
@@ -402,19 +403,45 @@ Set `store_in_repo: true` to use the older repo-committed evidence fallback.
 | Field                          | Type     | Default                 | Description                                                                         |
 | ------------------------------ | -------- | ----------------------- | ----------------------------------------------------------------------------------- |
 | `test.evidence.upload_to_gist` | `bool`   | `true`                  | Upload local image/video evidence to secret GitHub gists when assembling PR bodies |
-| `test.evidence.store_in_repo`  | `bool`   | `false`                 | Commit and push test evidence artifacts from inside the repo worktree              |
-| `test.evidence.dir`            | `string` | `.no-mistakes/evidence` | Repo-relative parent directory used when `store_in_repo` is true                    |
+| `test.evidence.store_in_repo` | `bool`   | `false`                 | Publish test evidence artifacts to the repository's orphan evidence branch  |
+| `test.evidence.dir`           | `string` | `.no-mistakes/evidence` | Directory prefix inside the evidence branch                                 |
+| `test.evidence.branch`        | `string` | `no-mistakes/evidence`  | Name of the orphan evidence branch                                          |
 
-When gist upload fails or is disabled, no-mistakes falls back to local file references unless `store_in_repo: true` is explicitly configured, in which case the push step commits evidence from the configured directory.
-The CI monitor automatically deletes uploaded evidence gists when it sees the PR merge or close; deleted gists make existing PR embeds and links 404.
-Use `no-mistakes evidence prune --run <id>` or `--pr <number>` as a manual fallback for older runs, failed automatic cleanup, or monitors that are no longer running.
-
-When `store_in_repo` is true, the test step writes evidence under `<dir>/<branch-slug>` and the push step stages files from that directory before committing agent changes.
+The test step always collects evidence in a temporary directory outside the worktree, so artifacts never enter the branch under validation.
+When `store_in_repo` is true for a GitHub repository, the PR step copies that directory onto `branch` under `<dir>/<branch-slug>` in the code branch's push-target repository (the fork when fork routing is configured), pushes it, and links the artifacts from the pull request body.
+The branch is an orphan: it shares no history with your code branches, so evidence never reaches the default branch. Links use the evidence commit rather than the branch, so they keep resolving after later runs.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
-If `store_in_repo` is false, or if `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
-Screenshots, images, GIFs, and videos still need a repository path, an externally visible URL, or successful secret-gist publishing before the PR is reviewer-visible.
+`branch` must be a valid Git branch name; an invalid value fails the config with the offending key and value.
+The publisher never force-pushes. It appends to the fetched evidence-branch tip with a fast-forward push, retries one lost race, and refuses to use the run branch, default branch, or an existing branch whose tip lacks the `.no-mistakes-evidence` marker.
+Publication is also refused when the remote cannot be read or pushed, an artifact exceeds 64 MiB, a run exceeds 500 files or 256 MiB, or another writer wins the retry. The PR body then keeps its local rendering instead of adding links that would not resolve.
+Evidence-branch publication currently supports GitHub links only. On other providers, no evidence branch is pushed and the PR body keeps its local rendering.
+Enabling this pushes a branch to your remote, so pick a `branch` name your CI workflows do not build.
+When gist upload fails or is disabled, no-mistakes falls back to local file references unless evidence-branch publication succeeds. The CI monitor automatically deletes uploaded evidence gists when it sees the PR merge or close; deleted gists make existing PR embeds and links 404. Use `no-mistakes evidence prune --run <id>` or `--pr <number>` as a manual fallback for older runs, failed automatic cleanup, or monitors that are no longer running.
+Screenshots, images, GIFs, and videos need a repository path, an externally visible URL, a published evidence-branch link, or successful secret-gist publishing before the PR is reviewer-visible.
 
-These are global defaults. Per-repo config can override these fields.
+These are global defaults. Per-repo config can override each field, except `branch`, which is read only from the trusted default branch.
+
+### eval
+
+Local review-evaluation corpus settings for [`no-mistakes eval`](/no-mistakes/reference/eval/).
+
+|      |          |
+| ---- | -------- |
+| Type | `object` |
+
+| Field                      | Type   | Default | Description                                                            |
+| -------------------------- | ------ | ------- | ---------------------------------------------------------------------- |
+| `eval.capture_provenance`  | `bool` | `true`  | Record the exact commit and configuration inputs a replay needs        |
+| `eval.auto_capture`        | `bool` | `true`  | Freeze eligible finished runs' review passes into the local corpus     |
+| `eval.max_cases`           | `int`  | `200`   | Retention target for automatic collection; `0` keeps every case        |
+
+`capture_provenance` is what makes a review pass replayable at all. It is recorded when the round is written and cannot be added afterwards, because the pinned configuration is a point-in-time snapshot, so a run reviewed with it off can never be captured later.
+
+`auto_capture` collects those passes without any command: when an eligible run finishes, its decided review rounds become cases. It does nothing while `capture_provenance` is off. Collection runs after the pipeline has already reported its outcome and can never change it; a failure is logged and nothing else.
+
+`max_cases` sets the retention target enforced after automatic collection. When it is exceeded the oldest unprotected cases are dropped first. A case with a replay in progress or recorded candidate replays is protected, so the corpus can remain above the target rather than invalidate a comparison you have spent tokens on. Cases from the same repository share one local object pool, so a case costs its own records plus the objects its commits introduced rather than a copy of the repository.
+
+These are operator settings for this machine's local disk, so they are global-only: an `eval` block in a repository's `.no-mistakes.yaml` is ignored. Corpus storage stays under `<NM_HOME>/eval` and no-mistakes never uploads it; replay still sends code to the selected agent's configured model provider as described in the [Evaluation toolkit](/no-mistakes/reference/eval/).
 
 ## Environment variables
 

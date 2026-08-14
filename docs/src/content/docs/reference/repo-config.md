@@ -8,11 +8,11 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, `no_ci`, and `ci.rerun_transient` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, and `test.evidence.branch` only from that trusted copy.
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`) are still read from the pushed branch.
+Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`) are still read from the pushed branch, except `test.evidence.branch`, which names a git ref the daemon pushes to.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -82,6 +82,7 @@ test:
     upload_to_gist: true
     store_in_repo: false
     dir: .no-mistakes/evidence
+    branch: no-mistakes/evidence
 ```
 
 ## Fields
@@ -366,6 +367,7 @@ Check names are not unique on a pull request, so same-named checks share one bud
 A rerun request returns as soon as the provider accepts it, while the new attempt replaces the cancelled check in the status rollup a moment later.
 A poll that still reads the exact completion the rerun was requested for has observed nothing new, so the monitor waits for a bounded couple of polls rather than escalating a check it never actually re-ran.
 A provider that accepts a rerun and never publishes it cannot stall the run past that.
+Once the provider publishes a conclusive replacement, no-mistakes durably stops treating that rerun as outstanding while preserving the spent budget; if the exact watched head is then green, the monitor reports `checks-passed` normally.
 
 A cancelled check that no rerun is going to replace pauses the step for user approval when cancellation is the only remaining issue, so the pull request never looks green.
 That is a check that came back cancelled after its rerun, and - at the default budget of `0`, once the budget is spent, or on a provider with no rerun API - the cancellation itself: the provider has already published its conclusion for that check and will not publish another one on its own, so there is nothing left for the monitor to wait for.
@@ -417,10 +419,10 @@ Fields not set here inherit from global config and then the built-in defaults.
 | `test.evidence.upload_to_gist` | `bool` | Inherits from global (default `true`) |
 | `test.evidence.store_in_repo` | `bool` | Inherits from global (default `false`) |
 | `test.evidence.dir` | `string` | Inherits from global (default `.no-mistakes/evidence`) |
+| `test.evidence.branch` | `string` | Inherits from global (default `no-mistakes/evidence`) |
 
-By default, test evidence is written to a managed temporary directory and GitHub visual evidence is uploaded to secret gists when `upload_to_gist` is true.
-Set `store_in_repo: true` only for repos that prefer committing evidence under `<dir>/<branch-slug>` and publishing it with the branch.
-The CI monitor automatically deletes those gists when it sees the PR merge or close; deleted gists make existing PR screenshots and evidence links 404.
-Use `no-mistakes evidence prune --run <id>` or `--pr <number>` as a manual fallback for older runs, failed automatic cleanup, or monitors that are no longer running.
-Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
-If `store_in_repo` is false, or if `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
+By default, test evidence stays in a temporary directory keyed by run ID, and GitHub visual evidence is uploaded to secret gists when `upload_to_gist` is true.
+For GitHub repositories, set `store_in_repo: true` to publish it to an orphan evidence branch in the code branch's push-target repository and link the artifacts from the PR body; evidence is never committed to the pushed branch, so it never reaches the default branch.
+`test.evidence.branch` is read ONLY from the trusted default-branch copy of this file, because it names a git ref the daemon pushes to; a pushed branch cannot redirect evidence commits.
+See [global config](/no-mistakes/reference/global-config/#testevidence) for provider support, limits, validation, and fail-closed behavior.
+The CI monitor automatically deletes uploaded evidence gists when it sees the PR merge or close; deleted gists make existing PR screenshots and evidence links 404. Use `no-mistakes evidence prune --run <id>` or `--pr <number>` as a manual fallback for older runs, failed automatic cleanup, or monitors that are no longer running.
